@@ -1,0 +1,19 @@
+# NPM stuff
+node_modules
+
+# SublimeText project files
+*.sublime-workspace
+*.sublime-project
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+
+
+# Thumbnails
+._*
+
+# Files that might appear on external disk
+.Spotlight-V100
+.Trashes

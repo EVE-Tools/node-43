@@ -1,0 +1,17 @@
+{
+  "name": "node-43",
+  "version": "1.0.0",
+  "author": "zweizeichen <info@zweizeichen.org>",
+  "description": "a NodeJS based consumer for element43",
+  "private": true,
+  "scripts": {
+    "start": "node app"
+  },
+  "dependencies": {
+    "zmq": "2.2.0",
+    "colors": "0.6.x",
+    "pg": "0.x",
+    "fast-stats": "0.0.x"
+  },
+  "license": "BSD-new"
+}
