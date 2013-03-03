@@ -7,6 +7,9 @@ var config = {};
 // Defines how many standard deviations a price is allowed to differ from the mean before being considered as malicious
 config.stdDevRejectionMultiplier = 3;
 
+// Maximum age a message can have before being rejected in hours
+config.maximumMessageAge = 8;
+
 //
 // Stats display and logging
 //

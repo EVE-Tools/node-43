@@ -76,17 +76,23 @@ zmqSocket.on('message', function(message) {
             // Get region/type pairs - we need them to minimize the amount of queries needed for the std. deviations
             regionTypes = emds.getDistinctRegionTypePairs(marketData);
 
-            // Iterate over regions affected
+            // IProceed if there are any orders
             if(orders.length > 0) {
-                for(var regionID in regionTypes) {
 
-                    // Iterate over types affected in that region
-                    for(i = 0; i < regionTypes[regionID].length; i++) {
+                // Filter time
+                if(((new Date(Date.now())) - Date.parse(orders[0].generatedAt)) > (config.maximumMessageAge * 60 * 60 * 1000)){
 
-                        var typeID = regionTypes[regionID][i];
+                    // Iterate over regions affected
+                    for(var regionID in regionTypes) {
 
-                        // Write that combination to DB
-                        upsertOrders(orders, typeID, regionID);
+                        // Iterate over types affected in that region
+                        for(i = 0; i < regionTypes[regionID].length; i++) {
+
+                            var typeID = regionTypes[regionID][i];
+
+                            // Write that combination to DB
+                            upsertOrders(orders, typeID, regionID);
+                        }
                     }
                 }
             } else {
