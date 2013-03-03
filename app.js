@@ -21,6 +21,11 @@ var stdDevWaiting = 0;
 var upsertWaiting = 0;
 var statWaiting = 0;
 var historyWaiting = 0;
+var regionStatHistoryWaiting = 0;
+
+// Throttling switches
+var throttleHistory = false;
+var throttleOrders = false;
 
 // EMDR statistics variables
 var emdrStatsEmptyOrderMessages = 0;
@@ -37,7 +42,7 @@ pgClient.connect();
 console.log('OK!'.green);
 
 // Connect to the relays specified in the config file
-for(var relay in config.relays) {
+for (var relay in config.relays) {
     process.stdout.write('Connecting to ' + config.relays[relay].underline + ':');
 
     // Connect to the relay.
@@ -65,7 +70,7 @@ zmqSocket.on('message', function(message) {
         // Increase stat counter
         messagesTotal++;
 
-        if(marketData.resultType == 'orders') {
+        if (marketData.resultType == 'orders') {
             // Increase stat counters
             messagesOrders++;
             emdrStatsOrderMessages++;
@@ -76,17 +81,17 @@ zmqSocket.on('message', function(message) {
             // Get region/type pairs - we need them to minimize the amount of queries needed for the std. deviations
             regionTypes = emds.getDistinctRegionTypePairs(marketData);
 
-            // IProceed if there are any orders
-            if(orders.length > 0) {
+            // Proceed if there are any orders
+            if (orders.length > 0 && !throttleOrders) {
 
                 // Filter time
-                if(((new Date(Date.now())) - Date.parse(orders[0].generatedAt)) > (config.maximumMessageAge * 60 * 60 * 1000)){
+                if (((new Date(Date.now())) - Date.parse(orders[0].generatedAt)) < (config.maximumMessageAge * 60 * 60 * 1000)) {
 
                     // Iterate over regions affected
-                    for(var regionID in regionTypes) {
+                    for (var regionID in regionTypes) {
 
                         // Iterate over types affected in that region
-                        for(i = 0; i < regionTypes[regionID].length; i++) {
+                        for (i = 0; i < regionTypes[regionID].length; i++) {
 
                             var typeID = regionTypes[regionID][i];
 
@@ -99,15 +104,21 @@ zmqSocket.on('message', function(message) {
                 // Increase stat value
                 emdrStatsEmptyOrderMessages++;
             }
-        } else if(marketData.resultType == 'history') {
+        }
+
+        if (marketData.resultType == 'history') {
             var historyObjects = emds.getHistoryObjects(marketData);
 
-            if(historyObjects.length > 0) {
+            // Increase EMDR stats
+            emdrStatsHistoryMessages++;
+            emdrStatsHistoryUpdates = historyObjects.length.length - result.rowCount;
+
+            if (historyObjects.length > 0 && !throttleHistory) {
                 // Collect all the data in the right order
                 var params = [];
                 var values = '';
 
-                for(x = 0; x < historyObjects.length; x++) {
+                for (x = 0; x < historyObjects.length; x++) {
                     var o = historyObjects[x];
 
                     // Add to values string
@@ -116,17 +127,20 @@ zmqSocket.on('message', function(message) {
 
                 values = values.slice(0, -1);
 
+                historyWaiting++;
+
                 // Execute query
                 pgClient.query('WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) AS (VALUES ' + values + '), upsert as (UPDATE market_data_orderhistory o SET numorders = new_value.numorders, low = new_value.low, high = new_value.high, mean = new_value.mean, quantity = new_value.quantity FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.*) INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
-                    if(err) {
+
+                    historyWaiting--;
+
+                    if (err) {
                         console.log('History upsert error:');
                         console.log(err);
-                        if(config.extensiveLogging) console.log(values);
+                        if (config.extensiveLogging) console.log(values);
                     } else {
                         // Increase stat counters
                         historyUpserts += historyObjects.length;
-                        emdrStatsHistoryMessages++;
-                        emdrStatsHistoryUpdates = historyObjects.length.length - result.rowCount;
                     }
                 });
             }
@@ -155,25 +169,25 @@ function upsertOrders(orders, typeID, regionID) {
 
         stdDevWaiting--;
 
-        if(err) {
+        if (err) {
             console.log('SQL error while determining standard deviation:');
             console.log(err);
-            if(config.extensiveLogging) console.log(typeID);
+            if (config.extensiveLogging) console.log(typeID);
         } else {
             // Iterate over orders and select those orders which are affected
             var ordersToUpsert = [];
             var hasSuspiciousOrders = false;
 
-            for(c = 0; c < orders.length; c++) {
-                if(orders[c].typeID == typeID && orders[c].regionID == regionID) {
+            for (c = 0; c < orders.length; c++) {
+                if (orders[c].typeID == typeID && orders[c].regionID == regionID) {
                     // Add the flag to the order
                     // First, check if we have more than 5 orders present
-                    if(result.rows[0].count > 5) {
+                    if (result.rows[0].count > 5) {
                         // See if the price is right or left of the mean value
-                        if(orders[c].price > result.rows[0].avg) {
+                        if (orders[c].price > result.rows[0].avg) {
 
                             // If the distance between mean and price is greater than config.stdDevRejectionMultiplier * σ this must be a suspicious order
-                            if(((orders[c].price - result.rows[0].avg) > (config.stdDevRejectionMultiplier  * result.rows[0].stddev)) && orders[c].bid) {
+                            if (((orders[c].price - result.rows[0].avg) > (config.stdDevRejectionMultiplier * result.rows[0].stddev)) && orders[c].bid) {
                                 orders[c].isSuspicious = true;
                                 hasSuspiciousOrders = true;
                             } else {
@@ -183,7 +197,7 @@ function upsertOrders(orders, typeID, regionID) {
                         } else {
 
                             // If the distance between mean and price is greater than config.stdDevRejectionMultiplier * σ this must be a suspicious order
-                            if(((result.rows[0].avg - orders[c].price) > (config.stdDevRejectionMultiplier  * result.rows[0].stddev)) && !orders[c].bid) {
+                            if (((result.rows[0].avg - orders[c].price) > (config.stdDevRejectionMultiplier * result.rows[0].stddev)) && !orders[c].bid) {
                                 orders[c].isSuspicious = true;
                                 hasSuspiciousOrders = true;
                             } else {
@@ -200,12 +214,12 @@ function upsertOrders(orders, typeID, regionID) {
                 }
             }
 
-            if(ordersToUpsert.length > 0) {
+            if (ordersToUpsert.length > 0) {
                 var values = '';
 
                 // Upsert this chunk
                 // Generate query strings
-                for(x = 0; x < ordersToUpsert.length; x++) {
+                for (x = 0; x < ordersToUpsert.length; x++) {
                     // Generate parameter list
                     var o = ordersToUpsert[x];
                     values += '(\'' + o.generatedAt + '\'::timestamp AT TIME ZONE \'UTC\',' + o.price + ',' + o.volRemaining + ',' + o.volEntered + ',' + o.minVolume + ',' + o.range + ',' + o.orderID + ',' + o.bid + ',\'' + o.issueDate + '\'::timestamp AT TIME ZONE \'UTC\',' + o.duration + ',' + o.isSuspicious + ',\'\',\'' + o.ipHash + '\',' + o.regionID + ',' + o.typeID + ',' + o.stationID + ',' + o.solarSystemID + ',true),';
@@ -222,10 +236,10 @@ function upsertOrders(orders, typeID, regionID) {
                 // Execute query
                 pgClient.query(upsertQuery, function(err, result) {
                     upsertWaiting--;
-                    if(err) {
+                    if (err) {
                         console.log('Order upsert error:');
                         console.log(err);
-                        if(config.extensiveLogging) console.log(values);
+                        if (config.extensiveLogging) console.log(values);
                     } else {
                         // Increase stat counters
                         orderUpserts += ordersToUpsert.length;
@@ -238,10 +252,10 @@ function upsertOrders(orders, typeID, regionID) {
                 generateRegionStats(regionID, typeID);
 
                 // Deactivate expired orders, if we do not have any suspicious orders in that message
-                if(!hasSuspiciousOrders) {
+                if (!hasSuspiciousOrders) {
                     // Collect all order IDs
                     var ids = [];
-                    for(x = 0; x < ordersToUpsert.length; x++) {
+                    for (x = 0; x < ordersToUpsert.length; x++) {
                         ids.push(ordersToUpsert[x].orderID);
                     }
 
@@ -257,10 +271,10 @@ function upsertOrders(orders, typeID, regionID) {
 
                     // Execute query
                     pgClient.query('UPDATE market_data_orders SET is_active = \'f\' WHERE mapregion_id=$1 AND invtype_id=$2 AND is_active=\'t\' AND market_data_orders.id NOT IN (' + placeholderIDs + ')', params, function(err, result) {
-                        if(err) {
+                        if (err) {
                             console.log('Order upsert error:');
                             console.log(err);
-                            if(config.extensiveLogging) console.log(params);
+                            if (config.extensiveLogging) console.log(params);
                         } else {
                             // Dont't do anything for now
                         }
@@ -281,7 +295,7 @@ function generateRegionStats(regionID, typeID) {
 
     pgClient.query('SELECT price, is_bid, volume_remaining FROM market_data_orders WHERE mapregion_id = $1 AND invtype_id = $2 AND is_active = \'t\'', [regionID, typeID], function(err, result) {
         statWaiting--;
-        if(err) {
+        if (err) {
             console.log('Error while fetching orders for regionStat generation:' + err);
         } else {
 
@@ -290,8 +304,8 @@ function generateRegionStats(regionID, typeID) {
             var askPrices = [];
 
             // Put prices into array
-            for(x = 0; x < result.rows.length; x++) {
-                if(result.rows[x].is_bid === true) {
+            for (x = 0; x < result.rows.length; x++) {
+                if (result.rows[x].is_bid === true) {
                     bidPrices.push(result.rows[x].price);
                 } else {
                     askPrices.push(result.rows[x].price);
@@ -299,7 +313,7 @@ function generateRegionStats(regionID, typeID) {
             }
 
             // Check if we have prices for both bids and asks
-            if(bidPrices.length > 0 && askPrices.length > 0) {
+            if (bidPrices.length > 0 && askPrices.length > 0) {
                 // Convert arrays into Stats object
                 bidPrices = new Stats(bidPrices);
                 askPrices = new Stats(askPrices);
@@ -332,14 +346,14 @@ function generateRegionStats(regionID, typeID) {
                 var askPricesVolume = 0;
 
                 // Manually bandpass array
-                for(x = 0; x < result.rows.length; x++) {
-                    if(result.rows[x].is_bid === true) {
-                        if(result.rows[x].price >= bidPercentile5 && result.rows[x].price <= bidPercentile95) {
+                for (x = 0; x < result.rows.length; x++) {
+                    if (result.rows[x].is_bid === true) {
+                        if (result.rows[x].price >= bidPercentile5 && result.rows[x].price <= bidPercentile95) {
                             bidPricesSum += result.rows[x].price * result.rows[x].volume_remaining;
                             bidPricesVolume += result.rows[x].volume_remaining;
                         }
                     } else {
-                        if(result.rows[x].price >= askPercentile5 && result.rows[x].price <= askPercentile95) {
+                        if (result.rows[x].price >= askPercentile5 && result.rows[x].price <= askPercentile95) {
                             askPricesSum = result.rows[x].price * result.rows[x].volume_remaining;
                             askPricesVolume += result.rows[x].volume_remaining;
                         }
@@ -363,19 +377,19 @@ function generateRegionStats(regionID, typeID) {
                 queryValues = queryValues.replace(/NaN/g, '0');
 
                 // Build history query
-                historyWaiting++;
+                regionStatHistoryWaiting++;
                 pgClient.query('WITH new_values (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) AS (VALUES ' + queryValuesHistory + '), upsert as ( UPDATE market_data_itemregionstathistory o SET buymean = new_value.buymean, buyavg = new_value.buyavg, buymedian = new_value.buymedian, sellmean = new_value.sellmean, sellavg = new_value.sellavg, sellmedian = new_value.sellmedian, buyvolume = new_value.buyvolume, sellvolume = new_value.sellvolume, buy_95_percentile = new_value.buy_95_percentile, sell_95_percentile = new_value.sell_95_percentile, buy_std_dev = new_value.buy_std_dev, sell_std_dev = new_value.sell_std_dev FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.* ) INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) SELECT * FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
-                    if(err) {
+                    if (err) {
                         console.log('RegionStatHistory upsert error:');
                         console.log(err);
-                        if(config.extensiveLogging) console.log(queryValuesHistory);
+                        if (config.extensiveLogging) console.log(queryValuesHistory);
                     } else {
                         pgClient.query('WITH new_values (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, buy_std_dev, sell_std_dev) AS (VALUES ' + queryValues + '), upsert as ( UPDATE market_data_itemregionstathistory o SET buymean = new_value.buymean, buyavg = new_value.buyavg, buymedian = new_value.buymedian, sellmean = new_value.sellmean, sellavg = new_value.sellavg, sellmedian = new_value.sellmedian, buyvolume = new_value.buyvolume, sellvolume = new_value.sellvolume, buy_95_percentile = new_value.buy_95_percentile, sell_95_percentile = new_value.sell_95_percentile, buy_std_dev = new_value.buy_std_dev, sell_std_dev = new_value.sell_std_dev FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id RETURNING o.* ) INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, buy_std_dev, sell_std_dev) SELECT * FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id)', function(err, result) {
-                            historyWaiting--;
-                            if(err) {
+                            regionStatHistoryWaiting--;
+                            if (err) {
                                 console.log('RegionStat upsert error:');
                                 console.log(err);
-                                if(config.extensiveLogging) console.log(queryValues);
+                                if (config.extensiveLogging) console.log(queryValues);
                             } else {}
                         });
                     }
@@ -421,15 +435,66 @@ setInterval(function() {
     });
 }, config.emdrStatsInterval);
 
+// Throttling
+if (config.throttlingEnabled) {
+    setInterval(function() {
+
+        var logMessage = '';
+        var now = new Date(Date.now());
+
+        // Check if history backlog is too large
+        if (historyWaiting > config.throttlingMaximumHistoryBacklog) {
+
+            // Only if we already throttle history, check if we have to throttle orders, too
+            if (throttleHistory) {
+
+                // Check if we are above the threshold
+                if ((stdDevWaiting > config.throttlingMaximumOrderBacklog) && !throttleOrders) {
+                    // Only notify once
+                    // Throttle history messages
+                    throttleOrders = true;
+
+                    logMessage = '\n[' + now.toLocaleTimeString() + '] Throttling order messages.';
+                    console.log(logMessage.red);
+                } else {
+                    if (throttleOrders) {
+                        // Un-throttle orders
+                        throttleOrders = false;
+                        logMessage = '\n[' + now.toLocaleTimeString() + '] Throttling disabled for orders.';
+                        console.log(logMessage.green);
+                    }
+                }
+
+            } else {
+                // Throttle history messages
+                throttleHistory = true;
+
+                logMessage = '\n[' + now.toLocaleTimeString() + '] Throttling history messages.';
+                console.log(logMessage.yellow);
+            }
+
+        } else {
+
+            if (throttleHistory || throttleOrders) {
+                // Un-throttle history and orders
+                throttleHistory = false;
+                throttleOrders = false;
+
+                logMessage = '\n[' + now.toLocaleTimeString() + '] Disabled throttling.';
+                console.log(logMessage.green);
+            }
+        }
+    }, 10000);
+}
 
 // Status
 setInterval(function() {
-    if(config.displayStats) {
+    if (config.displayStats) {
         var dividend = config.statsInterval / 1000;
         process.stdout.clearLine();
         process.stdout.cursorTo(0);
-        now = new Date(Date.now());
-        process.stdout.write('[' + now.toLocaleTimeString() + '] Receiving ' + (messagesTotal / dividend).toFixed() + ' (O:' + (messagesOrders / dividend).toFixed() + '/H:' + ((messagesTotal - messagesOrders) / dividend).toFixed() + ') messages per second. Performing ' + (orderUpserts / dividend).toFixed() + ' order upserts and ' + (historyUpserts / dividend).toFixed() + ' history upserts per second. Backlog: stdDev:' + stdDevWaiting + ' / orders: ' + upsertWaiting + ' / statistics: ' + statWaiting + ' / history: ' + historyWaiting);
+        var now = new Date(Date.now());
+        process.stdout.write('[' + now.toLocaleTimeString() + '] Receiving ' + (messagesTotal / dividend).toFixed() + ' (O:' + (messagesOrders / dividend).toFixed() + '/H:' + ((messagesTotal - messagesOrders) / dividend).toFixed() + ') messages per second. Performing ' + (orderUpserts / dividend).toFixed() + ' order upserts and ' + (historyUpserts / dividend).toFixed() + ' history upserts per second. Backlog: history: ' + historyWaiting + ' / stdDev: ' + stdDevWaiting + ' / orders: ' + upsertWaiting + ' / statistics: ' + statWaiting + ' / regionStatHistory: ' + regionStatHistoryWaiting);
     }
 
     // Reset counters
@@ -440,7 +505,7 @@ setInterval(function() {
 }, config.statsInterval);
 
 // Newline
-if(config.displayStats) {
+if (config.displayStats) {
     setInterval(function() {
         console.log('');
     }, config.statsNewline);
@@ -450,7 +515,7 @@ if(config.displayStats) {
 // Voodoo code makes the zmq socket stay open
 // Otherwise it would get removed by the garbage collection
 setTimeout(function() {
-    if(false) {
+    if (false) {
         zmqSocket.connect(relay);
     }
 }, 1000 * 60 * 60 * 24 * 365);

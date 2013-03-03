@@ -27,6 +27,28 @@ config.statsNewline = 300000;
 config.extensiveLogging = true;
 
 //
+// Data flow throttling
+//
+
+// Sometimes there is just too much data incoming for PostgreSQL to catch up which results in the consumer crashing.
+// To prevent this, the consumer is able to dynamically discard data. First, after the backlog exceeds a certain size,
+// history messages are being rejected as they are not as important as the orders. If this does not help either, order
+// messages are being rejected, too. Those values should be working for standard memory settings.
+//
+// Values for 8GB RAM (via –max-old-space-size=8192):
+// History: 60000
+// Orders: 75000
+
+// Throttling enabled?
+config.throttlingEnabled = true;
+
+// Backlog threshold for history throttling
+config.throttlingMaximumHistoryBacklog = 8000;
+
+// Threshold for order throttling (stdDev queue as it's the first query performed)
+config.throttlingMaximumOrderBacklog = 10000;
+
+//
 // EMDR Stats
 //
 
