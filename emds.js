@@ -3,101 +3,104 @@
 //
 
 /*
-* Takes parsed UUDIF messages and converts them into sanitized JS objects
-*/
-function getOrderObjects (marketData) {
+ * Takes parsed UUDIF messages and converts them into sanitized JS objects
+ */
 
-    result = [];
+function getOrderObjects(marketData) {
 
-    for(var rowset in marketData.rowsets) {
-        for(var row in marketData.rowsets[rowset].rows) {
-            orderObject = {};
+  result = [];
 
-            // Get column mapping
-            for (i = 0; i < marketData.columns.length; i++) {
-                orderObject[marketData.columns[i]] = marketData.rowsets[rowset].rows[row][i];
-            }
+  for (var rowset in marketData.rowsets) {
+    for (var row in marketData.rowsets[rowset].rows) {
+      orderObject = {};
 
-            // Add additional information
-            orderObject['typeID'] = marketData.rowsets[rowset].typeID;
-            orderObject['regionID'] = marketData.rowsets[rowset].regionID;
-            orderObject['generatedAt'] = marketData.rowsets[rowset].generatedAt;
+      // Get column mapping
+      for (i = 0; i < marketData.columns.length; i++) {
+        orderObject[marketData.columns[i]] = marketData.rowsets[rowset].rows[row][i];
+      }
 
-            for (i=0; i < marketData.uploadKeys.length; i++) {
-                if (marketData.uploadKeys[i].name == 'EMDR') {
-                    orderObject['ipHash'] = marketData.uploadKeys[i].key;
-                }
-            }
+      // Add additional information
+      orderObject['typeID'] = marketData.rowsets[rowset].typeID;
+      orderObject['regionID'] = marketData.rowsets[rowset].regionID;
+      orderObject['generatedAt'] = marketData.rowsets[rowset].generatedAt;
 
-            // Compare dates and filter orders from the future
-            now = new Date(Date.now());
-
-            if (Date.parse(orderObject.generatedAt) < now) {
-                // Append to result list
-                result.push(orderObject);
-            }
+      for (i = 0; i < marketData.uploadKeys.length; i++) {
+        if (marketData.uploadKeys[i].name == 'EMDR') {
+          orderObject['ipHash'] = marketData.uploadKeys[i].key;
         }
-    }
+      }
 
-    // Return filled list
-    return result;
+      // Compare dates and filter orders from the future
+      now = new Date(Date.now());
+
+      if (Date.parse(orderObject.generatedAt) < now) {
+        // Append to result list
+        result.push(orderObject);
+      }
+    }
+  }
+
+  // Return filled list
+  return result;
 }
 
 exports.getOrderObjects = getOrderObjects;
 
 /*
-* Takes parsed UUDIF messages and extracts unique sanitized region/type pairs
-*/
-function getDistinctRegionTypePairs(marketData){
+ * Takes parsed UUDIF messages and extracts unique sanitized region/type pairs
+ */
 
-    result = {};
+function getDistinctRegionTypePairs(marketData) {
 
-    for(var rowset in marketData.rowsets) {
+  result = {};
 
-        // If we don't have this region, add an empty list
-        if(Object.keys(result).indexOf(marketData.rowsets[rowset].regionID) == -1){
-            result[marketData.rowsets[rowset].regionID] = [];
-        }
+  for (var rowset in marketData.rowsets) {
 
-        // If that type is not in the list, add it
-        if(result[marketData.rowsets[rowset].regionID].indexOf(marketData.rowsets[rowset].typeID) == -1){
-            result[marketData.rowsets[rowset].regionID].push(marketData.rowsets[rowset].typeID);
-        }
+    // If we don't have this region, add an empty list
+    if (Object.keys(result).indexOf(marketData.rowsets[rowset].regionID) == -1) {
+      result[marketData.rowsets[rowset].regionID] = [];
     }
 
-    // Return filled list
-    return result;
+    // If that type is not in the list, add it
+    if (result[marketData.rowsets[rowset].regionID].indexOf(marketData.rowsets[rowset].typeID) == -1) {
+      result[marketData.rowsets[rowset].regionID].push(marketData.rowsets[rowset].typeID);
+    }
+  }
+
+  // Return filled list
+  return result;
 }
 
 exports.getDistinctRegionTypePairs = getDistinctRegionTypePairs;
 
 /*
-* Takes parsed UUDIF messages and converts them into sanitized JS objects
-*/
-function getHistoryObjects (historyData) {
+ * Takes parsed UUDIF messages and converts them into sanitized JS objects
+ */
 
-    result = [];
+function getHistoryObjects(historyData) {
 
-    for(var rowset in historyData.rowsets) {
-        for(var row in historyData.rowsets[rowset].rows) {
-            historyObject = {};
+  result = [];
 
-            // Get column mapping
-            for (i = 0; i < historyData.columns.length; i++) {
-                historyObject[historyData.columns[i]] = historyData.rowsets[rowset].rows[row][i];
-            }
+  for (var rowset in historyData.rowsets) {
+    for (var row in historyData.rowsets[rowset].rows) {
+      historyObject = {};
 
-            // Add additional information
-            historyObject['typeID'] = historyData.rowsets[rowset].typeID;
-            historyObject['regionID'] = historyData.rowsets[rowset].regionID;
-            historyObject['generatedAt'] = historyData.rowsets[rowset].generatedAt;
+      // Get column mapping
+      for (i = 0; i < historyData.columns.length; i++) {
+        historyObject[historyData.columns[i]] = historyData.rowsets[rowset].rows[row][i];
+      }
 
-            result.push(historyObject);
-        }
+      // Add additional information
+      historyObject['typeID'] = historyData.rowsets[rowset].typeID;
+      historyObject['regionID'] = historyData.rowsets[rowset].regionID;
+      historyObject['generatedAt'] = historyData.rowsets[rowset].generatedAt;
+
+      result.push(historyObject);
     }
+  }
 
-    // Return filled list
-    return result;
+  // Return filled list
+  return result;
 }
 
 exports.getHistoryObjects = getHistoryObjects;
