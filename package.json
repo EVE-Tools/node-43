@@ -8,7 +8,7 @@
     "start": "node app"
   },
   "dependencies": {
-    "zmq": "2.2.0",
+    "zmq": "2.3.0",
     "colors": "0.6.x",
     "pg": "0.x",
     "fast-stats": "0.0.x"
