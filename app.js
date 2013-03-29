@@ -135,7 +135,7 @@ zmqSocket.on('message', function(message) {
           historyWaiting--;
 
           if (err) {
-            console.log('History upsert error:');
+            console.log('\nHistory upsert error:');
             console.log(err);
             if (config.extensiveLogging) console.log(values);
           } else {
@@ -170,7 +170,7 @@ function upsertOrders(orders, typeID, regionID) {
     stdDevWaiting--;
 
     if (err) {
-      console.log('SQL error while determining standard deviation:');
+      console.log('\nSQL error while determining standard deviation:');
       console.log(err);
       if (config.extensiveLogging) console.log(typeID);
     } else {
@@ -237,9 +237,13 @@ function upsertOrders(orders, typeID, regionID) {
         pgClient.query(upsertQuery, function(err, result) {
           upsertWaiting--;
           if (err) {
-            console.log('Order upsert error:');
-            console.log(err);
-            if (config.extensiveLogging) console.log(values);
+            if (err.detail.indexOf('is not present in table "eve_db_stastation"') != -1) {
+              console.log('\nOrder upsert error: ' + err.detail + ' Update conquerable stations from CCP\'s API!'.yellow);
+            } else {
+              console.log('\nOrder upsert error:');
+              console.log(err);
+              if (config.extensiveLogging) console.log(values);
+            }
           } else {
             // Increase stat counters
             orderUpserts += ordersToUpsert.length;
@@ -272,7 +276,7 @@ function upsertOrders(orders, typeID, regionID) {
           // Execute query
           pgClient.query('UPDATE market_data_orders SET is_active = \'f\' WHERE mapregion_id=$1 AND invtype_id=$2 AND is_active=\'t\' AND market_data_orders.id NOT IN (' + placeholderIDs + ')', params, function(err, result) {
             if (err) {
-              console.log('Order upsert error:');
+              console.log('\nOrder deactivation error:');
               console.log(err);
               if (config.extensiveLogging) console.log(params);
             } else {
@@ -288,7 +292,6 @@ function upsertOrders(orders, typeID, regionID) {
 
 // Generate regional stats
 
-
 function generateRegionStats(regionID, typeID) {
 
   statWaiting++;
@@ -296,7 +299,7 @@ function generateRegionStats(regionID, typeID) {
   pgClient.query('SELECT price, is_bid, volume_remaining FROM market_data_orders WHERE mapregion_id = $1 AND invtype_id = $2 AND is_active = \'t\'', [regionID, typeID], function(err, result) {
     statWaiting--;
     if (err) {
-      console.log('Error while fetching orders for regionStat generation:' + err);
+      console.log('\nError while fetching orders for regionStat generation:' + err);
     } else {
 
       // Aggregate arrays
@@ -370,24 +373,24 @@ function generateRegionStats(regionID, typeID) {
 
         // Build query values
         var queryValuesHistory = '(' + bidMean + ',' + bidWeightedAverage + ',' + bidMedian + ',' + askWeightedAverage + ',' + askMean + ',' + askMedian + ',' + bidPricesVolume + ',' + askPricesVolume + ',' + bidPercentile95 + ',' + askPercentile95 + ',' + regionID + ',' + typeID + ',\'' + now_utc + '\'::timestamp AT TIME ZONE \'UTC\',' + bidStdDev + ',' + askStdDev + ')';
-        var queryValues = '(' + bidMean + ',' + bidWeightedAverage + ',' + bidMedian + ',' + askWeightedAverage + ',' + askMean + ',' + askMedian + ',' + bidPricesVolume + ',' + askPricesVolume + ',' + bidPercentile95 + ',' + askPercentile95 + ',' + regionID + ',' + typeID + ',' + bidStdDev + ',' + askStdDev + ')';
+        var queryValues = '(' + bidMean + ',' + bidWeightedAverage + ',' + bidMedian + ',' + askWeightedAverage + ',' + askMean + ',' + askMedian + ',' + bidPricesVolume + ',' + askPricesVolume + ',' + bidPercentile95 + ',' + askPercentile95 + ',' + regionID + ',' + typeID + ',\'' + now.toUTCString() + '\'::timestamp AT TIME ZONE \'UTC\',' + bidStdDev + ',' + askStdDev + ')';
 
         // Replace NaN with 0
         queryValuesHistory = queryValuesHistory.replace(/NaN/g, '0');
-        queryValues = queryValues.replace(/NaN/g, '0');
+        queryValues = queryValuesHistory.replace(/NaN/g, '0');
 
         // Build history query
         regionStatHistoryWaiting++;
-        pgClient.query('WITH new_values (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) AS (VALUES ' + queryValuesHistory + '), upsert as ( UPDATE market_data_itemregionstathistory o SET buymean = new_value.buymean, buyavg = new_value.buyavg, buymedian = new_value.buymedian, sellmean = new_value.sellmean, sellavg = new_value.sellavg, sellmedian = new_value.sellmedian, buyvolume = new_value.buyvolume, sellvolume = new_value.sellvolume, buy_95_percentile = new_value.buy_95_percentile, sell_95_percentile = new_value.sell_95_percentile, buy_std_dev = new_value.buy_std_dev, sell_std_dev = new_value.sell_std_dev FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.* ) INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) SELECT * FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
+        pgClient.query('WITH new_values (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) AS (VALUES ' + queryValuesHistory + '), upsert as ( UPDATE market_data_itemregionstathistory o SET buymean = new_value.buymean, buyavg = new_value.buyavg, buymedian = new_value.buymedian, sellmean = new_value.sellmean, sellavg = new_value.sellavg, sellmedian = new_value.sellmedian, buyvolume = new_value.buyvolume, sellvolume = new_value.sellvolume, buy_95_percentile = new_value.buy_95_percentile, sell_95_percentile = new_value.sell_95_percentile, buy_std_dev = new_value.buy_std_dev, sell_std_dev = new_value.sell_std_dev FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.* ) INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) SELECT * FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_itemregionstathistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
           if (err) {
-            console.log('RegionStatHistory upsert error:');
+            console.log('\nRegionStatHistory upsert error:');
             console.log(err);
             if (config.extensiveLogging) console.log(queryValuesHistory);
           } else {
-            pgClient.query('WITH new_values (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, buy_std_dev, sell_std_dev) AS (VALUES ' + queryValues + '), upsert as ( UPDATE market_data_itemregionstathistory o SET buymean = new_value.buymean, buyavg = new_value.buyavg, buymedian = new_value.buymedian, sellmean = new_value.sellmean, sellavg = new_value.sellavg, sellmedian = new_value.sellmedian, buyvolume = new_value.buyvolume, sellvolume = new_value.sellvolume, buy_95_percentile = new_value.buy_95_percentile, sell_95_percentile = new_value.sell_95_percentile, buy_std_dev = new_value.buy_std_dev, sell_std_dev = new_value.sell_std_dev FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id RETURNING o.* ) INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, buy_std_dev, sell_std_dev) SELECT * FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id)', function(err, result) {
+            pgClient.query('WITH new_values (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, lastupdate, buy_std_dev, sell_std_dev) AS (VALUES ' + queryValues + '), upsert as ( UPDATE market_data_itemregionstat o SET buymean = new_value.buymean, buyavg = new_value.buyavg, buymedian = new_value.buymedian, sellmean = new_value.sellmean, sellavg = new_value.sellavg, sellmedian = new_value.sellmedian, buyvolume = new_value.buyvolume, sellvolume = new_value.sellvolume, buy_95_percentile = new_value.buy_95_percentile, sell_95_percentile = new_value.sell_95_percentile, lastupdate = new_value.lastupdate, buy_std_dev = new_value.buy_std_dev, sell_std_dev = new_value.sell_std_dev FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id RETURNING o.* ) INSERT INTO market_data_itemregionstat (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, lastupdate, buy_std_dev, sell_std_dev) SELECT * FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id)', function(err, result) {
               regionStatHistoryWaiting--;
               if (err) {
-                console.log('RegionStat upsert error:');
+                console.log('\nRegionStat upsert error:');
                 console.log(err);
                 if (config.extensiveLogging) console.log(queryValues);
               } else {}
