@@ -35,6 +35,9 @@ var emdrStatsHistoryMessages = 0;
 var emdrStatsOrderMessages = 0;
 var emdrStatsHistoryUpdates = 0;
 
+// RegionStat schedule list
+var scheduledRegionStatUpdates = {};
+
 // Connect to database
 var pgClient = new pg.Client(config.postgresConnectionString);
 process.stdout.write('Connecting to PostgreSQL server: ');
@@ -252,8 +255,12 @@ function upsertOrders(orders, typeID, regionID) {
           }
         });
 
-        // Re-calculate statistics
-        generateRegionStats(regionID, typeID);
+        // Schedule recalculation of stats, unless config.regionStatsDelay is 0
+        if (config.regionStatsDelay === 0) {
+          generateRegionStats(regionID, typeID);
+        } else {
+          scheduleRegionStatUpdate(regionID, typeID);
+        }
 
         // Deactivate expired orders, if we do not have any suspicious orders in that message
         if (!hasSuspiciousOrders) {
@@ -290,8 +297,33 @@ function upsertOrders(orders, typeID, regionID) {
 
 }
 
-// Generate regional stats
+// Schedules a regionStatUpdate for a certain region/type combination in config.regionStatsDelay and executes due updates.
+function scheduleRegionStatUpdate(regionID, typeID) {
+  var now = new Date().getTime();
 
+  if (regionID + '/' + typeID in scheduledRegionStatUpdates){
+    // Do nothing - since the update is scheduled already
+  } else {
+    // Add to scheduled list
+    scheduledRegionStatUpdates[regionID + '/' + typeID] = now;
+  }
+
+  // Check for due updates
+  for (var update in scheduledRegionStatUpdates){
+    if ((now - scheduledRegionStatUpdates[update]) >= config.regionStatsDelay){
+      // Get region/type and split them
+      var variables = update.split('/');
+
+      // Remove from list
+      delete scheduledRegionStatUpdates[update];
+
+      // Execute update
+      generateRegionStats(variables[0], variables[1]);
+    }
+  }
+}
+
+// Generate regional stats
 function generateRegionStats(regionID, typeID) {
 
   statWaiting++;
