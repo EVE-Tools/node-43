@@ -63,6 +63,6 @@ config.emdrStatsInterval = 300000;
 config.relays = ['tcp://localhost:8050'];
 
 // Postgres login credentials
-config.postgresConnectionString = 'tcp://element43:5432@localhost/element43';
+config.postgresConnectionString = 'tcp://element43:element43@localhost:5432/element43';
 
 module.exports = config;
