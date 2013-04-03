@@ -28,13 +28,25 @@ config.regionStatsDelay = 0;
 config.displayStats = true;
 
 // The refresh interval for console stats in milliseconds
-config.statsInterval = 500;
+config.statsInterval = 5000;
 
 // The interval for newlines for logging in milliseconds
 config.statsNewline = 300000;
 
 // Enable extensive logging to also log the SQL values/parameters if an error occurs
 config.extensiveLogging = true;
+
+//
+// Caching
+//
+
+// Node43 keeps a cache of order messages and history datapoints to filter duplicate data.
+
+// Enable persistent caching? (write cache to disk)
+config.persistentCaching = true;
+
+// The interval for writing the cache to disk
+config.persistentCachingWriteInterval = 300000;
 
 //
 // Data flow throttling

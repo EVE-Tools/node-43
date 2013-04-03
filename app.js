@@ -4,6 +4,7 @@ var config = require('./config');
 // Load deps
 var zmq = require('zmq'),
   zlib = require('zlib'),
+  fs = require('fs'),
   colors = require('colors'),
   zmqSocket = zmq.socket('sub'),
   pg = require('pg'),
@@ -15,6 +16,9 @@ var messagesTotal = 0;
 var messagesOrders = 0;
 var orderUpserts = 0;
 var historyUpserts = 0;
+
+var ordersCacheHit = 0;
+var historyRowCacheHit = 0;
 
 // Backlog counters
 var stdDevWaiting = 0;
@@ -37,6 +41,32 @@ var emdrStatsHistoryUpdates = 0;
 
 // RegionStat schedule list
 var scheduledRegionStatUpdates = {};
+
+// Caches for history and order
+var historyCache = {};
+var orderCache = {};
+
+// Load caches from disk
+
+if (config.persistentCaching){
+  process.stdout.write('Loading history cache: ');
+
+  if (fs.existsSync('historyCache.json')) {
+    historyCache = JSON.parse(fs.readFileSync('historyCache.json'));
+    console.log('OK!'.green);
+  } else {
+    console.log('Not present yet'.yellow);
+  }
+
+  process.stdout.write('Loading order cache: ');
+
+  if (fs.existsSync('orderCache.json')) {
+    orderCache = JSON.parse(fs.readFileSync('orderCache.json'));
+    console.log('OK!'.green);
+  } else {
+    console.log('Not present yet'.yellow);
+  }
+}
 
 // Connect to database
 var pgClient = new pg.Client(config.postgresConnectionString);
@@ -98,8 +128,8 @@ zmqSocket.on('message', function(message) {
 
               var typeID = regionTypes[regionID][i];
 
-              // Write that combination to DB
-              upsertOrders(orders, typeID, regionID);
+              // Write filtered orders to DB
+              orderFilterCache(orders, typeID, regionID);
             }
           }
         }
@@ -112,44 +142,166 @@ zmqSocket.on('message', function(message) {
     if (marketData.resultType == 'history') {
       var historyObjects = emds.getHistoryObjects(marketData);
 
-      // Increase EMDR stats
-      emdrStatsHistoryMessages++;
-      emdrStatsHistoryUpdates = historyObjects.length.length - result.rowCount;
-
-      if (historyObjects.length > 0 && !throttleHistory) {
-        // Collect all the data in the right order
-        var params = [];
-        var values = '';
-
-        for (x = 0; x < historyObjects.length; x++) {
-          var o = historyObjects[x];
-
-          // Add to values string
-          values += '(' + o.regionID + ',' + o.typeID + ',' + o.orders + ',' + o.low + ',' + o.high + ',' + o.average + ',' + o.quantity + ', \'' + o.date + '\'::timestamp AT TIME ZONE \'UTC\'),';
-        }
-
-        values = values.slice(0, -1);
-
-        historyWaiting++;
-
-        // Execute query
-        pgClient.query('WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) AS (VALUES ' + values + '), upsert as (UPDATE market_data_orderhistory o SET numorders = new_value.numorders, low = new_value.low, high = new_value.high, mean = new_value.mean, quantity = new_value.quantity FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.*) INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
-
-          historyWaiting--;
-
-          if (err) {
-            console.log('\nHistory upsert error:');
-            console.log(err);
-            if (config.extensiveLogging) console.log(values);
-          } else {
-            // Increase stat counters
-            historyUpserts += historyObjects.length;
-          }
-        });
-      }
+      // Hand data over to cache handler
+      historyFilterCache(historyObjects);
     }
   });
 });
+
+// Filters "old" order messages
+
+//
+// Only new messages hit the DB
+//
+
+function orderFilterCache(orders, typeID, regionID) {
+  // If it's undefined, create cache entry and upsert orders
+  if (!orderCache[regionID]) orderCache[regionID] = {};
+
+  // Check if we already had that combination
+  if (!orderCache[regionID][typeID]) {
+
+    orderCache[regionID][typeID] = Date.parse(orders[0].generatedAt);
+
+    upsertOrders(orders, typeID, regionID);
+  } else {
+    // Check if this message is newer
+    if (Date.parse(orders[0].generatedAt) > orderCache[regionID][typeID]) {
+      // Upsert that combination
+      upsertOrders(orders, typeID, regionID);
+    } else {
+      ordersCacheHit += orders.length;
+    }
+  }
+}
+
+// Filters too old and new history rows
+
+function historyFilterCache(historyObjects) {
+  var filteredHistory = [];
+
+  for (var object in historyObjects) {
+
+    var regionTypeAdded = [];
+    var historyObject = historyObjects[object];
+
+    // First check, if we have already seen that region/type combination
+    if (!historyCache[historyObject.regionID]) historyCache[historyObject.regionID] = {};
+
+    if (!historyCache[historyObject.regionID][historyObject.typeID]) {
+      historyCache[historyObject.regionID][historyObject.typeID] = {};
+      historyCache[historyObject.regionID][historyObject.typeID].lastSeen = Date.parse(historyObject.generatedAt);
+      historyCache[historyObject.regionID][historyObject.typeID].oldestDate = Date.parse(historyObject.date);
+      historyCache[historyObject.regionID][historyObject.typeID].latestDate = Date.parse(historyObject.date);
+
+      // Add all the datapoints with that region/type
+      for (var freshObject in historyObjects) {
+        var freshHistoryObject = historyObjects[freshObject];
+        if ((freshHistoryObject.regionID == historyObject.regionID) && (freshHistoryObject.typeID == historyObject.typeID)) {
+          filteredHistory.push(freshHistoryObject);
+
+          if (Date.parse(freshHistoryObject.date) < historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].oldestDate) {
+            historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].oldestDate = Date.parse(freshHistoryObject.date);
+          }
+
+          if (Date.parse(freshHistoryObject.date) > historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].latestDate) {
+            historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].latestDate = Date.parse(freshHistoryObject.date);
+          }
+        }
+      }
+
+      regionTypeAdded.push(historyObject.regionID + '-' + historyObject.typeID);
+
+    }
+    // Check if that combination was not added just before
+
+    if (regionTypeAdded.indexOf(historyObject.regionID + '-' + historyObject.typeID) == -1) {
+      // Bandpass filter history
+
+      var added = false;
+
+      // Pass older data
+      if (Date.parse(historyObject.date) < historyCache[historyObject.regionID][historyObject.typeID].oldestDate) {
+        historyCache[historyObject.regionID][historyObject.typeID].oldestDate = Date.parse(historyObject.date);
+
+        if (!added) {
+          filteredHistory.push(historyObject);
+          added = true;
+        }
+      }
+
+      // Pass newer data
+      if (Date.parse(historyObject.date) > historyCache[historyObject.regionID][historyObject.typeID].latestDate) {
+        historyCache[historyObject.regionID][historyObject.typeID].latestDate = Date.parse(historyObject.date);
+
+        if (!added) {
+          filteredHistory.push(historyObject);
+          added = true;
+        }
+      }
+
+      // Update where generatedAt newer and matches our latest datapoint
+      if (Date.parse(historyObject.date) == historyCache[historyObject.regionID][historyObject.typeID].latestDate) {
+        if (historyCache[historyObject.regionID][historyObject.typeID].lastSeen < Date.parse(historyObject.generatedAt)) {
+          historyCache[historyObject.regionID][historyObject.typeID].lastSeen = Date.parse(historyObject.generatedAt);
+          if (!added) {
+            filteredHistory.push(historyObject);
+            added = true;
+          }
+        }
+      }
+    }
+  }
+
+  historyRowCacheHit += historyObjects.length - filteredHistory.length;
+
+  if ((historyObjects.length - filteredHistory.length) < 0) {
+    console.log('\nSomething went wrong'.red);
+  }
+
+
+  upsertHistory(filteredHistory);
+}
+
+// Upsert history
+
+function upsertHistory(historyObjects) {
+  // Increase EMDR stats
+  emdrStatsHistoryMessages++;
+  emdrStatsHistoryUpdates = historyObjects.length.length - result.rowCount;
+
+  if (historyObjects.length > 0 && !throttleHistory) {
+    // Collect all the data in the right order
+    var params = [];
+    var values = '';
+
+    for (x = 0; x < historyObjects.length; x++) {
+      var o = historyObjects[x];
+
+      // Add to values string
+      values += '(' + o.regionID + ',' + o.typeID + ',' + o.orders + ',' + o.low + ',' + o.high + ',' + o.average + ',' + o.quantity + ', \'' + o.date + '\'::timestamp AT TIME ZONE \'UTC\'),';
+    }
+
+    values = values.slice(0, -1);
+
+    historyWaiting++;
+
+    // Execute query
+    pgClient.query('WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) AS (VALUES ' + values + '), upsert as (UPDATE market_data_orderhistory o SET numorders = new_value.numorders, low = new_value.low, high = new_value.high, mean = new_value.mean, quantity = new_value.quantity FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.*) INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
+
+      historyWaiting--;
+
+      if (err) {
+        console.log('\nHistory upsert error:');
+        console.log(err);
+        if (config.extensiveLogging) console.log(values);
+      } else {
+        // Increase stat counters
+        historyUpserts += historyObjects.length;
+      }
+    });
+  }
+}
 
 // Upsert orders
 
@@ -234,6 +386,11 @@ function upsertOrders(orders, typeID, regionID) {
         // Prepare query
         var upsertQuery = "WITH new_values (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) AS (values " + values + "), upsert as ( UPDATE market_data_orders o SET price = new_value.price, volume_remaining = new_value.volume_remaining, generated_at = new_value.generated_at, issue_date = new_value.issue_date, is_suspicious = new_value.is_suspicious, uploader_ip_hash = new_value.uploader_ip_hash, is_active = 't' FROM new_values new_value WHERE o.id = new_value.id AND o.generated_at < new_value.generated_at RETURNING o.* ) INSERT INTO market_data_orders (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) SELECT generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.id = new_values.id) AND NOT EXISTS (SELECT 1 FROM market_data_orders WHERE id = new_values.id)";
 
+        // Check if there already is that order
+        for (x = 0; x < ordersToUpsert.length; x++) {
+          upsertOrder(ordersToUpsert[x]);
+        }
+
         upsertWaiting++;
 
         // Execute query
@@ -295,6 +452,18 @@ function upsertOrders(orders, typeID, regionID) {
     }
   });
 
+}
+
+// Performs an order upsert
+
+function upsertOrder(order) {
+  // Check if that order already exists
+  pgClient.query('SELECT 1 FROM market_data_orders WHERE id=$1', [order.id], function(err, result) {
+    if (err) {
+      console.log('\nOrder existence check error:');
+      console.log(err);
+    }
+  });
 }
 
 // Schedules a regionStatUpdate for a certain region/type combination in config.regionStatsDelay and executes due updates.
@@ -421,38 +590,38 @@ function generateRegionStats(regionID, typeID) {
 
         // Build query values
         var queryValuesHistory = [bidMean,
-                                  bidWeightedAverage,
-                                  bidMedian,
-                                  askWeightedAverage,
-                                  askMean,
-                                  askMedian,
-                                  bidPricesVolume,
-                                  askPricesVolume,
-                                  bidPercentile95,
-                                  askPercentile95,
-                                  regionID,
-                                  typeID,
-                                  utc_downtime,
-                                  bidStdDev,
-                                  askStdDev];
+        bidWeightedAverage,
+        bidMedian,
+        askWeightedAverage,
+        askMean,
+        askMedian,
+        bidPricesVolume,
+        askPricesVolume,
+        bidPercentile95,
+        askPercentile95,
+        regionID,
+        typeID,
+        utc_downtime,
+        bidStdDev,
+        askStdDev];
 
         var queryValues = [bidMean,
-                           bidWeightedAverage,
-                           bidMedian,
-                           askWeightedAverage,
-                           askMean,
-                           askMedian,
-                           bidPricesVolume,
-                           askPricesVolume,
-                           bidPercentile95,
-                           askPercentile95,
-                           regionID,
-                           typeID,
-                           now.toUTCString(),
-                           bidStdDev,
-                           askStdDev,
-                           regionID,
-                           typeID];
+        bidWeightedAverage,
+        bidMedian,
+        askWeightedAverage,
+        askMean,
+        askMedian,
+        bidPricesVolume,
+        askPricesVolume,
+        bidPercentile95,
+        askPercentile95,
+        regionID,
+        typeID,
+        now.toUTCString(),
+        bidStdDev,
+        askStdDev,
+        regionID,
+        typeID];
 
         regionStatHistoryWaiting++;
 
@@ -484,9 +653,9 @@ function generateRegionStats(regionID, typeID) {
           } else {
             regionStatHistoryWaiting--;
 
-            if (result.rowCount === 0){
+            if (result.rowCount === 0) {
               // Insert new row
-              pgClient.query('INSERT INTO market_data_itemregionstat (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, lastupdate, buy_std_dev, sell_std_dev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)', queryValues.slice(0,15), function(err, result) {
+              pgClient.query('INSERT INTO market_data_itemregionstat (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, lastupdate, buy_std_dev, sell_std_dev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)', queryValues.slice(0, 15), function(err, result) {
                 if (err) {
                   console.log('\nRegionStat insert error:');
                   console.log(err);
@@ -598,6 +767,27 @@ if (config.throttlingEnabled) {
   }, 10000);
 }
 
+// Save caches
+if (config.persistentCaching) {
+  setInterval(function() {
+    fs.writeFile('orderCache.json', JSON.stringify(orderCache), function(err) {
+      if (err) {
+        console.log('Error while saving order cache.'.red);
+      } else {
+        console.log('Saved order cache to disk.');
+      }
+    });
+
+    fs.writeFile('historyCache.json', JSON.stringify(historyCache), function(err) {
+      if (err) {
+        console.log('Error while saving history cache.'.red);
+      } else {
+        console.log('Saved history cache to disk.');
+      }
+    });
+  }, config.persistentCachingWriteInterval);
+}
+
 // Status
 setInterval(function() {
   if (config.displayStats) {
@@ -605,7 +795,7 @@ setInterval(function() {
     process.stdout.clearLine();
     process.stdout.cursorTo(0);
     var now = new Date(Date.now());
-    process.stdout.write('[' + now.toLocaleTimeString() + '] Receiving ' + (messagesTotal / dividend).toFixed() + ' (O:' + (messagesOrders / dividend).toFixed() + '/H:' + ((messagesTotal - messagesOrders) / dividend).toFixed() + ') messages per second. Performing ' + (orderUpserts / dividend).toFixed() + ' order upserts and ' + (historyUpserts / dividend).toFixed() + ' history upserts per second. Backlog: history: ' + historyWaiting + ' / stdDev: ' + stdDevWaiting + ' / orders: ' + upsertWaiting + ' / statistics: ' + statWaiting + ' / regionStatHistory: ' + regionStatHistoryWaiting);
+    process.stdout.write('[' + now.toLocaleTimeString() + '] Receiving ' + (messagesTotal / dividend).toFixed() + ' (O:' + (messagesOrders / dividend).toFixed() + '/H:' + ((messagesTotal - messagesOrders) / dividend).toFixed() + ') messages per second. Performing ' + (orderUpserts / dividend).toFixed() + '/' + (ordersCacheHit / dividend).toFixed() + ' order upserts and ' + (historyUpserts / dividend).toFixed() + '/' + (historyRowCacheHit / dividend).toFixed() + ' history upserts per second. Backlog: history: ' + historyWaiting + ' / stdDev: ' + stdDevWaiting + ' / orders: ' + upsertWaiting + ' / statistics: ' + statWaiting + ' / regionStatHistory: ' + regionStatHistoryWaiting);
   }
 
   // Reset counters
@@ -613,6 +803,9 @@ setInterval(function() {
   messagesOrders = 0;
   orderUpserts = 0;
   historyUpserts = 0;
+
+  historyRowCacheHit = 0;
+  ordersCacheHit = 0;
 }, config.statsInterval);
 
 // Newline
