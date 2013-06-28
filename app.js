@@ -501,6 +501,9 @@ function upsertOrder(order) {
     if (err) {
         console.log('Postgres error:');
         console.log(err);
+
+        done();
+
     } else {
       // Check if that order already exists
       pgClient.query('SELECT 1 FROM market_data_orders WHERE id=$1', [order.id], function(err, result) {
@@ -510,6 +513,7 @@ function upsertOrder(order) {
         }
 
         done();
+
       });
     }
   });
@@ -714,6 +718,8 @@ function generateRegionStats(regionID, typeID) {
                         done();
 
                       });
+                    } else {
+                      done();
                     }
                   }
                 });
