@@ -11,6 +11,9 @@ var zmq = require('zmq'),
   Stats = require('fast-stats').Stats,
   emds = require('./emds');
 
+// Set up pg connection pool
+pg.defaults.poolSize = config.postgresMaxConnections;
+
 // Global stat variables
 var messagesTotal = 0;
 var messagesOrders = 0;
@@ -67,12 +70,6 @@ if (config.persistentCaching){
     console.log('Not present yet'.yellow);
   }
 }
-
-// Connect to database
-var pgClient = new pg.Client(config.postgresConnectionString);
-process.stdout.write('Connecting to PostgreSQL server: ');
-pgClient.connect();
-console.log('OK!'.green);
 
 // Connect to the relays specified in the config file
 for (var relay in config.relays) {
@@ -286,18 +283,27 @@ function upsertHistory(historyObjects) {
 
     historyWaiting++;
 
-    // Execute query
-    pgClient.query('WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) AS (VALUES ' + values + '), upsert as (UPDATE market_data_orderhistory o SET numorders = new_value.numorders, low = new_value.low, high = new_value.high, mean = new_value.mean, quantity = new_value.quantity FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.*) INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
-
-      historyWaiting--;
-
+    pg.connect(config.postgresConnectionString, function(err, pgClient, done){
       if (err) {
-        console.log('\nHistory upsert error:');
-        console.log(err);
-        if (config.extensiveLogging) console.log(values);
+          console.log('Postgres error:');
+          console.log(err);
       } else {
-        // Increase stat counters
-        historyUpserts += historyObjects.length;
+        // Execute query
+        pgClient.query('WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) AS (VALUES ' + values + '), upsert as (UPDATE market_data_orderhistory o SET numorders = new_value.numorders, low = new_value.low, high = new_value.high, mean = new_value.mean, quantity = new_value.quantity FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.*) INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
+
+          historyWaiting--;
+
+          if (err) {
+            console.log('\nHistory upsert error:');
+            console.log(err);
+            if (config.extensiveLogging) console.log(values);
+          } else {
+            // Increase stat counters
+            historyUpserts += historyObjects.length;
+          }
+
+          done();
+        });
       }
     });
   }
@@ -315,153 +321,196 @@ function upsertOrders(orders, typeID, regionID) {
 
   stdDevWaiting++;
 
-  // Use a prepared statement for performance reasons
-  pgClient.query({
-    name: 'upsert_orders_stddev',
-    text: 'SELECT COUNT(id), STDDEV(price), AVG(price) FROM market_data_orders WHERE invtype_id=$1 AND mapregion_id=$2 AND is_active=\'t\' AND is_suspicious=\'f\'',
-    values: [typeID, regionID]
-  }, function(err, result) {
-
-    stdDevWaiting--;
+  pg.connect(config.postgresConnectionString, function(err, pgClientStdDev, doneStdDev){
 
     if (err) {
-      console.log('\nSQL error while determining standard deviation:');
-      console.log(err);
-      if (config.extensiveLogging) console.log(typeID);
+        console.log('Postgres error:');
+        console.log(err);
     } else {
-      // Iterate over orders and select those orders which are affected
-      var ordersToUpsert = [];
-      var hasSuspiciousOrders = false;
 
-      for (c = 0; c < orders.length; c++) {
-        if (orders[c].typeID == typeID && orders[c].regionID == regionID) {
-          // Add the flag to the order
-          // First, check if we have more than 5 orders present
-          if (result.rows[0].count > 5) {
-            // See if the price is right or left of the mean value
-            if (orders[c].price > result.rows[0].avg) {
+      // Use a prepared statement for performance reasons
+      pgClientStdDev.query({
+        name: 'upsert_orders_stddev',
+        text: 'SELECT COUNT(id), STDDEV(price), AVG(price) FROM market_data_orders WHERE invtype_id=$1 AND mapregion_id=$2 AND is_active=\'t\' AND is_suspicious=\'f\'',
+        values: [typeID, regionID]
+      }, function(err, result) {
 
-              // If the distance between mean and price is greater than config.stdDevRejectionMultiplier * σ this must be a suspicious order
-              if (((orders[c].price - result.rows[0].avg) > (config.stdDevRejectionMultiplier * result.rows[0].stddev)) && orders[c].bid) {
-                orders[c].isSuspicious = true;
-                hasSuspiciousOrders = true;
-              } else {
-                orders[c].isSuspicious = false;
-              }
+        doneStdDev();
 
-            } else {
+        stdDevWaiting--;
 
-              // If the distance between mean and price is greater than config.stdDevRejectionMultiplier * σ this must be a suspicious order
-              if (((result.rows[0].avg - orders[c].price) > (config.stdDevRejectionMultiplier * result.rows[0].stddev)) && !orders[c].bid) {
-                orders[c].isSuspicious = true;
-                hasSuspiciousOrders = true;
-              } else {
-                orders[c].isSuspicious = false;
-              }
-
-            }
-          } else {
-            // Not enough datapoints for a reliable guess
-            orders[c].isSuspicious = false;
-          }
-          // Finally, push that order to list
-          ordersToUpsert.push(orders[c]);
-        }
-      }
-
-      if (ordersToUpsert.length > 0) {
-        var values = '';
-
-        // Upsert this chunk
-        // Generate query strings
-        for (x = 0; x < ordersToUpsert.length; x++) {
-          // Generate parameter list
-          var o = ordersToUpsert[x];
-          values += '(\'' + o.generatedAt + '\'::timestamp AT TIME ZONE \'UTC\',' + o.price + ',' + o.volRemaining + ',' + o.volEntered + ',' + o.minVolume + ',' + o.range + ',' + o.orderID + ',' + o.bid + ',\'' + o.issueDate + '\'::timestamp AT TIME ZONE \'UTC\',' + o.duration + ',' + o.isSuspicious + ',\'\',\'' + o.ipHash + '\',' + o.regionID + ',' + o.typeID + ',' + o.stationID + ',' + o.solarSystemID + ',true),';
-        }
-
-        // Cut off trailing comma
-        values = values.substring(0, values.length - 1);
-
-        // Prepare query
-        var upsertQuery = "WITH new_values (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) AS (values " + values + "), upsert as ( UPDATE market_data_orders o SET price = new_value.price, volume_remaining = new_value.volume_remaining, generated_at = new_value.generated_at, issue_date = new_value.issue_date, is_suspicious = new_value.is_suspicious, uploader_ip_hash = new_value.uploader_ip_hash, is_active = 't' FROM new_values new_value WHERE o.id = new_value.id AND o.generated_at < new_value.generated_at RETURNING o.* ) INSERT INTO market_data_orders (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) SELECT generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.id = new_values.id) AND NOT EXISTS (SELECT 1 FROM market_data_orders WHERE id = new_values.id)";
-
-        // Check if there already is that order
-        for (x = 0; x < ordersToUpsert.length; x++) {
-          upsertOrder(ordersToUpsert[x]);
-        }
-
-        upsertWaiting++;
-
-        // Execute query
-        pgClient.query(upsertQuery, function(err, result) {
-          upsertWaiting--;
-          if (err) {
-            if (err.detail.indexOf('is not present in table "eve_db_stastation"') != -1) {
-              console.log('\nOrder upsert error: ' + err.detail + ' Update conquerable stations from CCP\'s API!'.yellow);
-            } else {
-              console.log('\nOrder upsert error:');
-              console.log(err);
-              if (config.extensiveLogging) console.log(values);
-            }
-          } else {
-            // Increase stat counters
-            orderUpserts += ordersToUpsert.length;
-            emdrStatsOrderInserts += result.rowCount;
-            emdrStatsOrderUpdates += ordersToUpsert.length - result.rowCount;
-          }
-        });
-
-        // Schedule recalculation of stats, unless config.regionStatsDelay is 0
-        if (config.regionStatsDelay === 0) {
-          generateRegionStats(regionID, typeID);
+        if (err) {
+          console.log('\nSQL error while determining standard deviation:');
+          console.log(err);
+          if (config.extensiveLogging) console.log(typeID);
         } else {
-          scheduleRegionStatUpdate(regionID, typeID);
-        }
+          // Iterate over orders and select those orders which are affected
+          var ordersToUpsert = [];
+          var hasSuspiciousOrders = false;
 
-        // Deactivate expired orders, if we do not have any suspicious orders in that message
-        if (!hasSuspiciousOrders) {
-          // Collect all order IDs
-          var ids = [];
-          for (x = 0; x < ordersToUpsert.length; x++) {
-            ids.push(ordersToUpsert[x].orderID);
+          for (c = 0; c < orders.length; c++) {
+            if (orders[c].typeID == typeID && orders[c].regionID == regionID) {
+              // Add the flag to the order
+              // First, check if we have more than 5 orders present
+              if (result.rows[0].count > 5) {
+                // See if the price is right or left of the mean value
+                if (orders[c].price > result.rows[0].avg) {
+
+                  // If the distance between mean and price is greater than config.stdDevRejectionMultiplier * σ this must be a suspicious order
+                  if (((orders[c].price - result.rows[0].avg) > (config.stdDevRejectionMultiplier * result.rows[0].stddev)) && orders[c].bid) {
+                    orders[c].isSuspicious = true;
+                    hasSuspiciousOrders = true;
+                  } else {
+                    orders[c].isSuspicious = false;
+                  }
+
+                } else {
+
+                  // If the distance between mean and price is greater than config.stdDevRejectionMultiplier * σ this must be a suspicious order
+                  if (((result.rows[0].avg - orders[c].price) > (config.stdDevRejectionMultiplier * result.rows[0].stddev)) && !orders[c].bid) {
+                    orders[c].isSuspicious = true;
+                    hasSuspiciousOrders = true;
+                  } else {
+                    orders[c].isSuspicious = false;
+                  }
+
+                }
+              } else {
+                // Not enough datapoints for a reliable guess
+                orders[c].isSuspicious = false;
+              }
+              // Finally, push that order to list
+              ordersToUpsert.push(orders[c]);
+            }
           }
 
-          // Generate placeholders
-          var placeholderIDs = ids.map(function(name, x) {
-            return '$' + (x + 3);
-          }).join(',');
+          if (ordersToUpsert.length > 0) {
+            var values = '';
 
-          // Generate flat params array
-          var params = [];
-          params.push(regionID, typeID);
-          params = params.concat(ids);
-
-          // Execute query
-          pgClient.query('UPDATE market_data_orders SET is_active = \'f\' WHERE mapregion_id=$1 AND invtype_id=$2 AND is_active=\'t\' AND market_data_orders.id NOT IN (' + placeholderIDs + ')', params, function(err, result) {
-            if (err) {
-              console.log('\nOrder deactivation error:');
-              console.log(err);
-              if (config.extensiveLogging) console.log(params);
-            } else {
-              // Dont't do anything for now
+            // Upsert this chunk
+            // Generate query strings
+            for (x = 0; x < ordersToUpsert.length; x++) {
+              // Generate parameter list
+              var o = ordersToUpsert[x];
+              values += '(\'' + o.generatedAt + '\'::timestamp AT TIME ZONE \'UTC\',' + o.price + ',' + o.volRemaining + ',' + o.volEntered + ',' + o.minVolume + ',' + o.range + ',' + o.orderID + ',' + o.bid + ',\'' + o.issueDate + '\'::timestamp AT TIME ZONE \'UTC\',' + o.duration + ',' + o.isSuspicious + ',\'\',\'' + o.ipHash + '\',' + o.regionID + ',' + o.typeID + ',' + o.stationID + ',' + o.solarSystemID + ',true),';
             }
-          });
+
+            // Cut off trailing comma
+            values = values.substring(0, values.length - 1);
+
+            // Prepare query
+            var upsertQuery = "WITH new_values (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) AS (values " + values + "), upsert as ( UPDATE market_data_orders o SET price = new_value.price, volume_remaining = new_value.volume_remaining, generated_at = new_value.generated_at, issue_date = new_value.issue_date, is_suspicious = new_value.is_suspicious, uploader_ip_hash = new_value.uploader_ip_hash, is_active = 't' FROM new_values new_value WHERE o.id = new_value.id AND o.generated_at < new_value.generated_at RETURNING o.* ) INSERT INTO market_data_orders (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) SELECT generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.id = new_values.id) AND NOT EXISTS (SELECT 1 FROM market_data_orders WHERE id = new_values.id)";
+
+            // Check if there already is that order
+            for (x = 0; x < ordersToUpsert.length; x++) {
+              upsertOrder(ordersToUpsert[x]);
+            }
+
+            upsertWaiting++;
+
+            pg.connect(config.postgresConnectionString, function(err, pgClient, done){
+
+              if (err) {
+                  console.log('Postgres error:');
+                  console.log(err);
+              } else {
+
+                // Execute query
+                pgClient.query(upsertQuery, function(err, result) {
+                  upsertWaiting--;
+                  if (err) {
+                    if (err.detail.indexOf('is not present in table "eve_db_stastation"') != -1) {
+                      console.log('\nOrder upsert error: ' + err.detail + ' Update conquerable stations from CCP\'s API!'.yellow);
+                    } else {
+                      console.log('\nOrder upsert error:');
+                      console.log(err);
+                      if (config.extensiveLogging) console.log(values);
+                    }
+                  } else {
+                    // Increase stat counters
+                    orderUpserts += ordersToUpsert.length;
+                    emdrStatsOrderInserts += result.rowCount;
+                    emdrStatsOrderUpdates += ordersToUpsert.length - result.rowCount;
+                  }
+
+                  done();
+                });
+              }
+            });
+
+            // Schedule recalculation of stats, unless config.regionStatsDelay is 0
+            if (config.regionStatsDelay === 0) {
+              generateRegionStats(regionID, typeID);
+            } else {
+              scheduleRegionStatUpdate(regionID, typeID);
+            }
+
+            // Deactivate expired orders, if we do not have any suspicious orders in that message
+            if (!hasSuspiciousOrders) {
+              // Collect all order IDs
+              var ids = [];
+              for (x = 0; x < ordersToUpsert.length; x++) {
+                ids.push(ordersToUpsert[x].orderID);
+              }
+
+              // Generate placeholders
+              var placeholderIDs = ids.map(function(name, x) {
+                return '$' + (x + 3);
+              }).join(',');
+
+              // Generate flat params array
+              var params = [];
+              params.push(regionID, typeID);
+              params = params.concat(ids);
+
+              pg.connect(config.postgresConnectionString, function(err, pgClient, done){
+
+                if (err) {
+                    console.log('Postgres error:');
+                    console.log(err);
+                } else {
+
+                  // Execute query
+                  pgClient.query('UPDATE market_data_orders SET is_active = \'f\' WHERE mapregion_id=$1 AND invtype_id=$2 AND is_active=\'t\' AND market_data_orders.id NOT IN (' + placeholderIDs + ')', params, function(err, result) {
+                    if (err) {
+                      console.log('\nOrder deactivation error:');
+                      console.log(err);
+                      if (config.extensiveLogging) console.log(params);
+                    } else {
+                      // Dont't do anything for now
+                    }
+
+                    done();
+
+                  });
+                }
+              });
+            }
+          }
         }
-      }
+      });
     }
   });
-
 }
 
 // Performs an order upsert
 
 function upsertOrder(order) {
-  // Check if that order already exists
-  pgClient.query('SELECT 1 FROM market_data_orders WHERE id=$1', [order.id], function(err, result) {
+  pg.connect(config.postgresConnectionString, function(err, pgClient, done){
+
     if (err) {
-      console.log('\nOrder existence check error:');
-      console.log(err);
+        console.log('Postgres error:');
+        console.log(err);
+    } else {
+      // Check if that order already exists
+      pgClient.query('SELECT 1 FROM market_data_orders WHERE id=$1', [order.id], function(err, result) {
+        if (err) {
+          console.log('\nOrder existence check error:');
+          console.log(err);
+        }
+
+        done();
+      });
     }
   });
 }
@@ -499,182 +548,226 @@ function generateRegionStats(regionID, typeID) {
 
   statWaiting++;
 
-  pgClient.query('SELECT price, is_bid, volume_remaining FROM market_data_orders WHERE mapregion_id = $1 AND invtype_id = $2 AND is_active = \'t\'', [regionID, typeID], function(err, result) {
-    statWaiting--;
+  pg.connect(config.postgresConnectionString, function(err, pgClientStats, doneStats) {
+
     if (err) {
-      console.log('\nError while fetching orders for regionStat generation:' + err);
+      console.log('Postgres error:');
+      console.log(err);
     } else {
 
-      // Aggregate arrays
-      var bidPrices = [];
-      var askPrices = [];
+      pgClientStats.query('SELECT price, is_bid, volume_remaining FROM market_data_orders WHERE mapregion_id = $1 AND invtype_id = $2 AND is_active = \'t\'', [regionID, typeID], function(err, result) {
+        statWaiting--;
 
-      // Put prices into array
-      for (x = 0; x < result.rows.length; x++) {
-        if (result.rows[x].is_bid === true) {
-          bidPrices.push(result.rows[x].price);
+        doneStats();
+
+        if (err) {
+          console.log('\nError while fetching orders for regionStat generation:' + err);
         } else {
-          askPrices.push(result.rows[x].price);
-        }
-      }
 
-      // Check if we have prices for both bids and asks
-      if (bidPrices.length > 0 && askPrices.length > 0) {
-        // Convert arrays into Stats object
-        bidPrices = new Stats(bidPrices);
-        askPrices = new Stats(askPrices);
+          // Aggregate arrays
+          var bidPrices = [];
+          var askPrices = [];
 
-        // Filter top/bottom 5%
-        bidPercentile5 = bidPrices.percentile(5);
-        bidPercentile95 = bidPrices.percentile(95);
-        bidPrices = bidPrices.band_pass(bidPercentile5, bidPercentile95);
-
-        askPercentile5 = bidPrices.percentile(5);
-        askPercentile95 = askPrices.percentile(95);
-        askPrices = askPrices.band_pass(askPercentile5, askPercentile95);
-
-        // Calculate various values
-        bidMean = bidPrices.amean();
-        bidMedian = bidPrices.median();
-        bidStdDev = bidPrices.stddev();
-
-        askMean = askPrices.amean();
-        askMedian = askPrices.median();
-        askStdDev = askPrices.stddev();
-
-        //
-        // Calculate weighted average
-        //
-        var bidPricesSum = 0;
-        var bidPricesVolume = 0;
-
-        var askPricesSum = 0;
-        var askPricesVolume = 0;
-
-        // Manually bandpass array
-        for (x = 0; x < result.rows.length; x++) {
-          if (result.rows[x].is_bid === true) {
-            if (result.rows[x].price >= bidPercentile5 && result.rows[x].price <= bidPercentile95) {
-              bidPricesSum += result.rows[x].price * result.rows[x].volume_remaining;
-              bidPricesVolume += result.rows[x].volume_remaining;
-            }
-          } else {
-            if (result.rows[x].price >= askPercentile5 && result.rows[x].price <= askPercentile95) {
-              askPricesSum = result.rows[x].price * result.rows[x].volume_remaining;
-              askPricesVolume += result.rows[x].volume_remaining;
-            }
-          }
-        }
-
-        // Actually calculate the weighted average
-        bidWeightedAverage = (bidPricesSum / bidPricesVolume);
-        askWeightedAverage = (askPricesSum / askPricesVolume);
-
-        //
-        // Generate dates
-        //
-
-        // Now
-        var now = new Date();
-
-        // Get today's downtime - this will be the starting point for each day's statistics
-        var utc_downtime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 11)).toUTCString();
-
-        //
-        // Start querying the database
-        //
-        //
-        // First, check if we have a history entry in the last 24 hours. If there is one, we have to insert/update
-        // itemregionstats - if not, we have to add a new row to itemregionstatshistory *and* insert/update itemregionstats.
-        //
-
-        // Build query values
-        var queryValuesHistory = [bidMean,
-        bidWeightedAverage,
-        bidMedian,
-        askWeightedAverage,
-        askMean,
-        askMedian,
-        bidPricesVolume,
-        askPricesVolume,
-        bidPercentile95,
-        askPercentile95,
-        regionID,
-        typeID,
-        utc_downtime,
-        bidStdDev,
-        askStdDev];
-
-        var queryValues = [bidMean,
-        bidWeightedAverage,
-        bidMedian,
-        askWeightedAverage,
-        askMean,
-        askMedian,
-        bidPricesVolume,
-        askPricesVolume,
-        bidPercentile95,
-        askPercentile95,
-        regionID,
-        typeID,
-        now.toUTCString(),
-        bidStdDev,
-        askStdDev,
-        regionID,
-        typeID];
-
-        regionStatHistoryWaiting++;
-
-        pgClient.query("SELECT 1 FROM market_data_itemregionstathistory WHERE mapregion_id = $1 AND invtype_id = $2 AND date >= NOW() - \'1 day\'::INTERVAL", [regionID, typeID], function(err, result) {
-          if (err) {
-            console.log('\nRegionStatHistory select error:');
-            console.log(err);
-            if (config.extensiveLogging) console.log(queryValues);
-          } else {
-            if (result.rowCount === 0) {
-              // There is none, so we add a new history row
-              pgClient.query('INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)', queryValuesHistory, function(err, result) {
-                if (err) {
-                  console.log('\nRegionStatHistory insert error:');
-                  console.log(err);
-                  if (config.extensiveLogging) console.log(queryValuesHistory);
-                }
-              });
-            }
-          }
-        });
-
-        // Check if there is a row for that type - if there is not, insert the row
-        pgClient.query('SELECT 1 FROM market_data_itemregionstat WHERE mapregion_id = $1 AND invtype_id = $2', [regionID, typeID], function(err, result) {
-          if (err) {
-            console.log('\nRegionStat select error:');
-            console.log(err);
-            if (config.extensiveLogging) console.log(queryValues);
-          } else {
-            regionStatHistoryWaiting--;
-
-            if (result.rowCount === 0) {
-              // Insert new row
-              pgClient.query('INSERT INTO market_data_itemregionstat (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, lastupdate, buy_std_dev, sell_std_dev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)', queryValues.slice(0, 15), function(err, result) {
-                if (err) {
-                  console.log('\nRegionStat insert error:');
-                  console.log(err);
-                  if (config.extensiveLogging) console.log(queryValues);
-                }
-              });
+          // Put prices into array
+          for (x = 0; x < result.rows.length; x++) {
+            if (result.rows[x].is_bid === true) {
+              bidPrices.push(result.rows[x].price);
             } else {
-              // Update row
-              pgClient.query('UPDATE market_data_itemregionstat SET buymean=$1, buyavg=$2, buymedian=$3, sellmean=$4, sellavg=$5, sellmedian=$6, buyvolume=$7, sellvolume=$8, buy_95_percentile=$9, sell_95_percentile=$10, mapregion_id=$11, invtype_id=$12, lastupdate=$13, buy_std_dev=$14, sell_std_dev=$15 WHERE mapregion_id=$16 AND invtype_id=$17', queryValues, function(err, result) {
-                if (err) {
-                  console.log('\nRegionStat update error:');
-                  console.log(err);
-                  if (config.extensiveLogging) console.log(queryValues);
-                }
-              });
+              askPrices.push(result.rows[x].price);
             }
           }
-        });
-      }
+
+          // Check if we have prices for both bids and asks
+          if (bidPrices.length > 0 && askPrices.length > 0) {
+            // Convert arrays into Stats object
+            bidPrices = new Stats(bidPrices);
+            askPrices = new Stats(askPrices);
+
+            // Filter top/bottom 5%
+            bidPercentile5 = bidPrices.percentile(5);
+            bidPercentile95 = bidPrices.percentile(95);
+            bidPrices = bidPrices.band_pass(bidPercentile5, bidPercentile95);
+
+            askPercentile5 = bidPrices.percentile(5);
+            askPercentile95 = askPrices.percentile(95);
+            askPrices = askPrices.band_pass(askPercentile5, askPercentile95);
+
+            // Calculate various values
+            bidMean = bidPrices.amean();
+            bidMedian = bidPrices.median();
+            bidStdDev = bidPrices.stddev();
+
+            askMean = askPrices.amean();
+            askMedian = askPrices.median();
+            askStdDev = askPrices.stddev();
+
+            //
+            // Calculate weighted average
+            //
+            var bidPricesSum = 0;
+            var bidPricesVolume = 0;
+
+            var askPricesSum = 0;
+            var askPricesVolume = 0;
+
+            // Manually bandpass array
+            for (x = 0; x < result.rows.length; x++) {
+              if (result.rows[x].is_bid === true) {
+                if (result.rows[x].price >= bidPercentile5 && result.rows[x].price <= bidPercentile95) {
+                  bidPricesSum += result.rows[x].price * result.rows[x].volume_remaining;
+                  bidPricesVolume += result.rows[x].volume_remaining;
+                }
+              } else {
+                if (result.rows[x].price >= askPercentile5 && result.rows[x].price <= askPercentile95) {
+                  askPricesSum = result.rows[x].price * result.rows[x].volume_remaining;
+                  askPricesVolume += result.rows[x].volume_remaining;
+                }
+              }
+            }
+
+            // Actually calculate the weighted average
+            bidWeightedAverage = (bidPricesSum / bidPricesVolume);
+            askWeightedAverage = (askPricesSum / askPricesVolume);
+
+            //
+            // Generate dates
+            //
+
+            // Now
+            var now = new Date();
+
+            // Get today's downtime - this will be the starting point for each day's statistics
+            var utc_downtime = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 11)).toUTCString();
+
+            //
+            // Start querying the database
+            //
+            //
+            // First, check if we have a history entry in the last 24 hours. If there is one, we have to insert/update
+            // itemregionstats - if not, we have to add a new row to itemregionstatshistory *and* insert/update itemregionstats.
+            //
+
+            // Build query values
+            var queryValuesHistory = [bidMean,
+              bidWeightedAverage,
+              bidMedian,
+              askWeightedAverage,
+              askMean,
+              askMedian,
+              bidPricesVolume,
+              askPricesVolume,
+              bidPercentile95,
+              askPercentile95,
+              regionID,
+              typeID,
+              utc_downtime,
+              bidStdDev,
+              askStdDev
+            ];
+
+            var queryValues = [bidMean,
+              bidWeightedAverage,
+              bidMedian,
+              askWeightedAverage,
+              askMean,
+              askMedian,
+              bidPricesVolume,
+              askPricesVolume,
+              bidPercentile95,
+              askPercentile95,
+              regionID,
+              typeID,
+              now.toUTCString(),
+              bidStdDev,
+              askStdDev,
+              regionID,
+              typeID
+            ];
+
+            regionStatHistoryWaiting++;
+
+            pg.connect(config.postgresConnectionString, function(err, pgClient, done){
+
+              if (err) {
+                  console.log('Postgres error:');
+                  console.log(err);
+              } else {
+
+                pgClient.query("SELECT 1 FROM market_data_itemregionstathistory WHERE mapregion_id = $1 AND invtype_id = $2 AND date >= NOW() - \'1 day\'::INTERVAL", [regionID, typeID], function(err, result) {
+                  if (err) {
+                    console.log('\nRegionStatHistory select error:');
+                    console.log(err);
+                    if (config.extensiveLogging) console.log(queryValues);
+
+                    done();
+
+                  } else {
+                    if (result.rowCount === 0) {
+                      // There is none, so we add a new history row
+                      pgClient.query('INSERT INTO market_data_itemregionstathistory (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, date, buy_std_dev, sell_std_dev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)', queryValuesHistory, function(err, result) {
+                        if (err) {
+                          console.log('\nRegionStatHistory insert error:');
+                          console.log(err);
+                          if (config.extensiveLogging) console.log(queryValuesHistory);
+                        }
+
+                        done();
+
+                      });
+                    }
+                  }
+                });
+              }
+            });
+
+            pg.connect(config.postgresConnectionString, function(err, pgClient, done){
+
+              if (err) {
+                  console.log('Postgres error:');
+                  console.log(err);
+              } else {
+
+                // Check if there is a row for that type - if there is not, insert the row
+                pgClient.query('SELECT 1 FROM market_data_itemregionstat WHERE mapregion_id = $1 AND invtype_id = $2', [regionID, typeID], function(err, result) {
+                  if (err) {
+                    console.log('\nRegionStat select error:');
+                    console.log(err);
+                    if (config.extensiveLogging) console.log(queryValues);
+
+                    done();
+                  } else {
+                    regionStatHistoryWaiting--;
+
+                    if (result.rowCount === 0) {
+                      // Insert new row
+                      pgClient.query('INSERT INTO market_data_itemregionstat (buymean, buyavg, buymedian, sellmean, sellavg, sellmedian, buyvolume, sellvolume, buy_95_percentile, sell_95_percentile, mapregion_id, invtype_id, lastupdate, buy_std_dev, sell_std_dev) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)', queryValues.slice(0, 15), function(err, result) {
+                        if (err) {
+                          console.log('\nRegionStat insert error:');
+                          console.log(err);
+                          if (config.extensiveLogging) console.log(queryValues);
+                        }
+
+                        done();
+                      });
+                    } else {
+                      // Update row
+                      pgClient.query('UPDATE market_data_itemregionstat SET buymean=$1, buyavg=$2, buymedian=$3, sellmean=$4, sellavg=$5, sellmedian=$6, buyvolume=$7, sellvolume=$8, buy_95_percentile=$9, sell_95_percentile=$10, mapregion_id=$11, invtype_id=$12, lastupdate=$13, buy_std_dev=$14, sell_std_dev=$15 WHERE mapregion_id=$16 AND invtype_id=$17', queryValues, function(err, result) {
+                        if (err) {
+                          console.log('\nRegionStat update error:');
+                          console.log(err);
+                          if (config.extensiveLogging) console.log(queryValues);
+                        }
+
+                        done();
+                      });
+                    }
+                  }
+                });
+              }
+            });
+          }
+        }
+      });
     }
   });
 }
@@ -691,27 +784,37 @@ setInterval(function() {
   // 6: History updates
   now = new Date(Date.now());
 
-  // Note the compact callback pyramid of doom here
-  pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [0, emdrStatsEmptyOrderMessages, now], function(err, result) {
-    pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [1, emdrStatsOrderInserts, now], function(err, result) {
-      pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [2, emdrStatsOrderUpdates, now], function(err, result) {
-        pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [3, emdrStatsOrderUpdates, now], function(err, result) {
-          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [4, emdrStatsHistoryMessages, now], function(err, result) {
-            pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [5, emdrStatsOrderMessages, now], function(err, result) {
-              pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [6, emdrStatsHistoryUpdates, now], function(err, result) {
-                // Rest values
-                emdrStatsEmptyOrderMessages = 0;
-                emdrStatsOrderInserts = 0;
-                emdrStatsOrderUpdates = 0;
-                emdrStatsHistoryMessages = 0;
-                emdrStatsOrderMessages = 0;
-                emdrStatsHistoryUpdates = 0;
+  pg.connect(config.postgresConnectionString, function(err, pgClient, done){
+
+    if (err) {
+        console.log('Postgres error:');
+        console.log(err);
+    } else {
+
+      // Note the compact callback pyramid of doom here
+      pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [0, emdrStatsEmptyOrderMessages, now], function(err, result) {
+        pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [1, emdrStatsOrderInserts, now], function(err, result) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [2, emdrStatsOrderUpdates, now], function(err, result) {
+            pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [3, emdrStatsOrderUpdates, now], function(err, result) {
+              pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [4, emdrStatsHistoryMessages, now], function(err, result) {
+                pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [5, emdrStatsOrderMessages, now], function(err, result) {
+                  pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [6, emdrStatsHistoryUpdates, now], function(err, result) {
+                    // Rest values
+                    emdrStatsEmptyOrderMessages = 0;
+                    emdrStatsOrderInserts = 0;
+                    emdrStatsOrderUpdates = 0;
+                    emdrStatsHistoryMessages = 0;
+                    emdrStatsOrderMessages = 0;
+                    emdrStatsHistoryUpdates = 0;
+                    done();
+                  });
+                });
               });
             });
           });
         });
       });
-    });
+    }
   });
 }, config.emdrStatsInterval);
 

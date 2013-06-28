@@ -87,4 +87,7 @@ config.relays = ['tcp://localhost:8050'];
 // Postgres login credentials
 config.postgresConnectionString = 'tcp://element43:element43@localhost:5432/element43';
 
+// Maximum number of simultaneous connections to teh Postgres instance
+config.postgresMaxConnections = 10;
+
 module.exports = config;
