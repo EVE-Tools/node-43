@@ -592,7 +592,7 @@ function generateRegionStats(regionID, typeID) {
             bidPercentile95 = bidPrices.percentile(95);
             bidPrices = bidPrices.band_pass(bidPercentile5, bidPercentile95);
 
-            askPercentile5 = bidPrices.percentile(5);
+            askPercentile5 = askPrices.percentile(5);
             askPercentile95 = askPrices.percentile(95);
             askPrices = askPrices.band_pass(askPercentile5, askPercentile95);
 
