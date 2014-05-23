@@ -9,7 +9,8 @@ var zmq = require('zmq'),
   zmqSocket = zmq.socket('sub'),
   pg = require('pg'),
   Stats = require('fast-stats').Stats,
-  emds = require('./emds');
+  emds = require('./emds'),
+  async = require('async');
 
 // Set up pg connection pool
 pg.defaults.poolSize = config.postgresMaxConnections;
@@ -796,29 +797,43 @@ setInterval(function() {
         console.log('Postgres error:');
         console.log(err);
     } else {
-
-      // Note the compact callback pyramid of doom here
-      pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [0, emdrStatsEmptyOrderMessages, now], function(err, result) {
-        pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [1, emdrStatsOrderInserts, now], function(err, result) {
-          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [2, emdrStatsOrderUpdates, now], function(err, result) {
-            pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [3, emdrStatsOrderUpdates, now], function(err, result) {
-              pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [4, emdrStatsHistoryMessages, now], function(err, result) {
-                pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [5, emdrStatsOrderMessages, now], function(err, result) {
-                  pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [6, emdrStatsHistoryUpdates, now], function(err, result) {
-                    // Rest values
-                    emdrStatsEmptyOrderMessages = 0;
-                    emdrStatsOrderInserts = 0;
-                    emdrStatsOrderUpdates = 0;
-                    emdrStatsHistoryMessages = 0;
-                    emdrStatsOrderMessages = 0;
-                    emdrStatsHistoryUpdates = 0;
-                    done();
-                  });
-                });
-              });
-            });
-          });
-        });
+      async.series([
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [0, emdrStatsEmptyOrderMessages, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [1, emdrStatsOrderInserts, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [2, emdrStatsOrderUpdates, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [2, emdrStatsOrderUpdates, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [3, emdrStatsOrderUpdates, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [4, emdrStatsHistoryMessages, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [5, emdrStatsOrderMessages, now], cb);
+        },
+        function (cb) {
+          pgClient.query('INSERT INTO market_data_emdrstats (status_type, status_count, message_timestamp) VALUES ($1, $2, $3)', [6, emdrStatsHistoryUpdates, now], cb);
+        }
+      ], function (err, results) {
+        if (err) {
+          console.log('Postgres query error:', err);
+        }
+        // Rest values
+        emdrStatsEmptyOrderMessages = 0;
+        emdrStatsOrderInserts = 0;
+        emdrStatsOrderUpdates = 0;
+        emdrStatsHistoryMessages = 0;
+        emdrStatsOrderMessages = 0;
+        emdrStatsHistoryUpdates = 0;
+        done();
       });
     }
   });
