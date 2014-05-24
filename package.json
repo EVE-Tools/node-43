@@ -1,17 +1,25 @@
 {
   "name": "node-43",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "zweizeichen <info@zweizeichen.org>",
   "description": "a NodeJS based consumer for element43",
   "private": true,
   "scripts": {
-    "start": "node app"
+    "start": "node app",
+    "test": "mocha test --recursive --reporter Spec"
   },
   "dependencies": {
-    "zmq": "2.3.0",
+    "underscore": "1.x",
+    "async": "0.x",
+    "zmq": "2.x",
     "colors": "0.6.x",
-    "pg": "2.x",
-    "fast-stats": "0.0.1"
+    "pg": "3.x",
+    "fast-stats": "0.x",
+    "murmurhash": "0.0.x"
+  },
+  "devDependencies": {
+    "mocha": "1.18.x",
+    "should": "3.3.x"
   },
   "license": "BSD-new"
 }

@@ -145,7 +145,7 @@ zmqSocket.on('message', function(message) {
   });
 });
 
-// Filters "old" order messages
+// Filters 'old' order messages
 
 //
 // Only new messages hit the DB
@@ -313,7 +313,7 @@ function upsertHistory(historyObjects) {
 
 function upsertOrders(orders, typeID, regionID) {
   // Get all the statistical data for the isSuspicios flag:
-  // Check order if "supicious" which is an arbitrary definition.  Any orders that are outside config.stdDevRejectionMultiplier standard deviations
+  // Check order if 'supicious' which is an arbitrary definition.  Any orders that are outside config.stdDevRejectionMultiplier standard deviations
   // of the mean AND where there are more than 5 orders of like type in the region will be flagged.
   // Flags: True = Yes (suspicious), False = No (not suspicious)
   //
@@ -399,7 +399,7 @@ function upsertOrders(orders, typeID, regionID) {
             values = values.substring(0, values.length - 1);
 
             // Prepare query
-            var upsertQuery = "WITH new_values (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) AS (values " + values + "), upsert as ( UPDATE market_data_orders o SET price = new_value.price, volume_remaining = new_value.volume_remaining, generated_at = new_value.generated_at, issue_date = new_value.issue_date, is_suspicious = new_value.is_suspicious, uploader_ip_hash = new_value.uploader_ip_hash, is_active = 't' FROM new_values new_value WHERE o.id = new_value.id AND o.generated_at < new_value.generated_at RETURNING o.* ) INSERT INTO market_data_orders (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) SELECT generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.id = new_values.id) AND NOT EXISTS (SELECT 1 FROM market_data_orders WHERE id = new_values.id)";
+            var upsertQuery = 'WITH new_values (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) AS (values ' + values + '), upsert as ( UPDATE market_data_orders o SET price = new_value.price, volume_remaining = new_value.volume_remaining, generated_at = new_value.generated_at, issue_date = new_value.issue_date, is_suspicious = new_value.is_suspicious, uploader_ip_hash = new_value.uploader_ip_hash, is_active = \'t\' FROM new_values new_value WHERE o.id = new_value.id AND o.generated_at < new_value.generated_at RETURNING o.* ) INSERT INTO market_data_orders (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active) SELECT generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, message_key, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.id = new_values.id) AND NOT EXISTS (SELECT 1 FROM market_data_orders WHERE id = new_values.id)';
 
             // Check if there already is that order
             for (x = 0; x < ordersToUpsert.length; x++) {
@@ -419,7 +419,7 @@ function upsertOrders(orders, typeID, regionID) {
                 pgClient.query(upsertQuery, function(err, result) {
                   upsertWaiting--;
                   if (err) {
-                    if (err.detail.indexOf('is not present in table "eve_db_stastation"') != -1) {
+                    if (err.detail.indexOf('is not present in table \'eve_db_stastation\'') != -1) {
                       console.log('\nOrder upsert error: ' + err.detail + ' Update conquerable stations from CCP\'s API!'.yellow);
                     } else {
                       console.log('\nOrder upsert error:');
@@ -697,7 +697,7 @@ function generateRegionStats(regionID, typeID) {
                   console.log(err);
               } else {
 
-                pgClient.query("SELECT 1 FROM market_data_itemregionstathistory WHERE mapregion_id = $1 AND invtype_id = $2 AND date >= NOW() - \'1 day\'::INTERVAL", [regionID, typeID], function(err, result) {
+                pgClient.query('SELECT 1 FROM market_data_itemregionstathistory WHERE mapregion_id = $1 AND invtype_id = $2 AND date >= NOW() - \'1 day\'::INTERVAL', [regionID, typeID], function(err, result) {
                   if (err) {
                     console.log('\nRegionStatHistory select error:');
                     console.log(err);
