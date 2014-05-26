@@ -18,8 +18,6 @@ var config = require('./config');
 var messageParser = require('./lib/messagePipeline/messageParser'),
   messageFilter = require('./lib/messagePipeline/messageFilter'),
   messageSplitter = require('./lib/messagePipeline/messageSplitter'),
-  historyFilter = require('./lib/messagePipeline/historyFilter'),
-  historyStore = require('./lib/messagePipeline/historyStore'),
   orderFilter = require('./lib/messagePipeline/orderFilter'),
   orderProcessor = require('./lib/messagePipeline/orderProcessor'),
   orderStore = require('./lib/messagePipeline/orderStore'),
@@ -48,9 +46,7 @@ emdr.on('message', function(message) {
     },
     messageFilter,                        // Filter duplicate messages
     messageSplitter,                      // Splits multi region/type messages into separate resultSets
-    historyFilter,                        // Filter history rows and dispatch CREST updates (skip order messages)
-    historyStore,                         // Store cleaned history data
-    orderFilter,                          // Filter cached order rows (skip history messages)
+    orderFilter,                          // Filter cached order rows
     orderProcessor,                       // Determine suspicious orders
     orderStore,                           // Store cleaned order data
     orderCleanup,                         // Deactivate existing orders which were not present in message
