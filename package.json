@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "start": "node app",
-    "test": "mocha"
+    "test": "mocha --reporter spec"
   },
   "dependencies": {
     "async": "0.x",

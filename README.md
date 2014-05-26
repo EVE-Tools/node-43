@@ -1,5 +1,5 @@
 # node-43
-[![Build Status](https://img.shields.io/travis/EVE-Tools/node-43/nextgen.svg?style=flat)](https://travis-ci.org/EVE-Tools/node-43) [![Dependencies Status](https://img.shields.io/gemnasium/EVE-Tools/node-43.svg?style=flat)](https://gemnasium.com/EVE-Tools/node-43) [![gittip](https://img.shields.io/gittip/zweizeichen.svg?style=flat)](https://www.gittip.com/zweizeichen/)
+[![Build Status](https://img.shields.io/travis/EVE-Tools/node-43/nextgen.svg?style=flat)](https://travis-ci.org/EVE-Tools/node-43) [![Coveralls](http://img.shields.io/coveralls/EVE-Tools/node-43/nextgen.svg?style=flat)](https://coveralls.io/r/EVE-Tools/node-43) [![Dependencies Status](https://img.shields.io/gemnasium/EVE-Tools/node-43.svg?style=flat)](https://gemnasium.com/EVE-Tools/node-43) [![gittip](https://img.shields.io/gittip/zweizeichen.svg?style=flat)](https://www.gittip.com/zweizeichen/)
 
 Node-43 is an alternative consumer for Element43.
 
