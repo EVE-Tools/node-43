@@ -1,4 +1,5 @@
 # node-43
+[![Build Status](https://travis-ci.org/EVE-Tools/node-43.svg?branch=nextgen)](https://travis-ci.org/EVE-Tools/node-43)
 
 Node-43 is an alternative consumer for Element43.
 
