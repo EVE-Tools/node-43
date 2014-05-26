@@ -6,20 +6,24 @@
   "private": true,
   "scripts": {
     "start": "node app",
-    "test": "mocha test --recursive --reporter spec"
+    "test": "mocha",
   },
   "dependencies": {
-    "underscore": "1.x",
     "async": "0.x",
-    "zmq": "2.x",
     "colors": "0.6.x",
-    "pg": "3.x",
+    "coveralls": "^2.10.0",
     "fast-stats": "0.x",
-    "murmurhash": "0.0.x"
+    "mocha-lcov-reporter": "0.0.1",
+    "murmurhash": "0.0.x",
+    "pg": "3.x",
+    "underscore": "1.x",
+    "zmq": "2.x"
   },
   "devDependencies": {
-    "mocha": "1.18.x",
-    "should": "3.3.x"
+    "mocha": "1.19.x",
+    "should": "3.3.x",
+    "istanbul": "0.2.x",
+    "coveralls": "2.10.x"
   },
   "license": "BSD-new"
 }
