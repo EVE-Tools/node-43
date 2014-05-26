@@ -4,5 +4,6 @@ node_js:
   - "0.10"
   - "0.8"
 before_install:
- - sudo apt-get update -qq
- - sudo apt-get install -qq libzmq3-dev libpq-dev
+ - sudo add-apt-repository ppa:chris-lea/zeromq -y
+ - sudo apt-get update
+ - sudo apt-get install -y libpgm-dev libzmq-dev libpq-dev
