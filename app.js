@@ -15,16 +15,16 @@ var async = require('async'),
 var config = require('./config');
 
 // Load message pipeline components
-var messageParser = require('./lib/messageParser'),
-  messageFilter = require('./lib/messageFilter'),
-  messageSplitter = require('./lib/messageSplitter'),
-  historyFilter = require('./lib/historyFilter'),
-  historyStore = require('./lib/historyStore'),
-  orderFilter = require('./lib/orderFilter'),
-  orderProcessor = require('./lib/orderProcessor'),
-  orderStore = require('./lib/orderStore'),
-  orderCleanup = require('./lib/orderCleanup'),
-  orderRegionStats = require('./lib/orderRegionStats');
+var messageParser = require('./lib/messagePipeline/messageParser'),
+  messageFilter = require('./lib/messagePipeline/messageFilter'),
+  messageSplitter = require('./lib/messagePipeline/messageSplitter'),
+  historyFilter = require('./lib/messagePipeline/historyFilter'),
+  historyStore = require('./lib/messagePipeline/historyStore'),
+  orderFilter = require('./lib/messagePipeline/orderFilter'),
+  orderProcessor = require('./lib/messagePipeline/orderProcessor'),
+  orderStore = require('./lib/messagePipeline/orderStore'),
+  orderCleanup = require('./lib/messagePipeline/orderCleanup'),
+  orderRegionStats = require('./lib/messagePipeline/orderRegionStats');
 
 // Main client
 var emdr = require('./lib/emdrClient')(config.relays);
