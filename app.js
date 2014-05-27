@@ -29,6 +29,9 @@ var messageParser = require('./lib/messagePipeline/messageParser'),
 // Main client
 var emdr = require('./lib/emdrClient')(config.relays);
 
+// CREST client
+var crest = require('./lib/crestPipeline/crestHistoryAgent');
+
 //
 // Message Pipeline
 //
@@ -38,7 +41,6 @@ emdr.on('message', function(message) {
 
   //
   // Messages are processed in this waterfall and are handed down from stage to stage.
-  // Skip steps on message type mismatch (e.g. handing orders to a history processing module)
   // For further reference read: http://dev.eve-central.com/unifieduploader/start
   //
 
@@ -74,12 +76,3 @@ emdr.on('message', function(message) {
     }
   });
 });
-
-//
-// CREST API Pipeline
-//
-
-// on history enqueue
-  // check history cache
-  // make api call
-  // merge data

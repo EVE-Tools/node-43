@@ -17,7 +17,8 @@
     "murmurhash": "0.0.x",
     "pg": "3.x",
     "underscore": "1.x",
-    "zmq": "2.x"
+    "zmq": "2.x",
+    "request": "2.x"
   },
   "devDependencies": {
     "mocha": "1.19.x",
