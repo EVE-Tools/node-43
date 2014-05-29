@@ -8,8 +8,8 @@
 //
 
 // Dependencies
-var async = require('async'),
-  colors = require('colors');
+var async = require('async');
+var colors = require('colors');
 
 // Load configuration
 var config = require('./config');
@@ -31,6 +31,13 @@ var emdr = require('./lib/emdrClient')(config.relays);
 
 // CREST client
 var crest = require('./lib/crestPipeline/crestHistoryAgent');
+
+// Event Center
+var eventCenter = require('./lib/eventCenter');
+
+// EMDR statistics collector
+var emdrStatsCollector = require('./lib/emdrStats');
+
 
 //
 // Message Pipeline
@@ -62,6 +69,8 @@ emdr.on('message', function(message) {
     // Basic error logging
     //
 
+    eventCenter.emit('messageCheckOut');
+
     if(error){
       if (error.severity === 0) {
         //console.info(String(error.message).cyan);
@@ -70,6 +79,8 @@ emdr.on('message', function(message) {
       } else if (error.severity === 2) {
         console.info(String(error.message).red);
       } else {
+        console.log('EMDR Message Pipeline Error:'.red);
+
         // Handle Errors
         console.error(error);
       }
