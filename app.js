@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // Load global configuration
 var config = require('./config');
 
@@ -148,176 +149,58 @@ zmqSocket.on('message', function(message) {
 
 // Filters "old" order messages
 
+=======
+>>>>>>> nextgen
 //
-// Only new messages hit the DB
+// app.js
+// node43's main module
 //
 
-function orderFilterCache(orders, typeID, regionID) {
-  // If it's undefined, create cache entry and upsert orders
-  if (!orderCache[regionID]) orderCache[regionID] = {};
+//
+// Config
+//
 
-  // Check if we already had that combination
-  if (!orderCache[regionID][typeID]) {
+// Dependencies
+var async = require('async');
+var colors = require('colors');
 
-    orderCache[regionID][typeID] = Date.parse(orders[0].generatedAt);
+// Load configuration
+var config = require('./config');
 
-    upsertOrders(orders, typeID, regionID);
-  } else {
-    // Check if this message is newer
-    if (Date.parse(orders[0].generatedAt) > orderCache[regionID][typeID]) {
-      // Upsert that combination
-      upsertOrders(orders, typeID, regionID);
-    } else {
-      ordersCacheHit += orders.length;
-    }
-  }
-}
+// Load message pipeline components
+var messageParser = require('./lib/messagePipeline/messageParser'),
+  messageFilter = require('./lib/messagePipeline/messageFilter'),
+  messageSplitter = require('./lib/messagePipeline/messageSplitter'),
+  orderFilter = require('./lib/messagePipeline/orderFilter'),
+  orderProcessor = require('./lib/messagePipeline/orderProcessor'),
+  orderStore = require('./lib/messagePipeline/orderStore'),
+  orderCleanup = require('./lib/messagePipeline/orderCleanup'),
+  orderCalculateRegionStats = require('./lib/messagePipeline/orderCalculateRegionStats'),
+  orderRegionStats = require('./lib/messagePipeline/orderRegionStats'),
+  orderRegionStatsHistory = require('./lib/messagePipeline/orderRegionStatsHistory');
 
-// Filters too old and new history rows
+// Main client
+var emdr = require('./lib/emdrClient')(config.relays);
 
-function historyFilterCache(historyObjects) {
-  var filteredHistory = [];
+// CREST client
+var crest = require('./lib/crestPipeline/crestHistoryAgent');
 
-  for (var object in historyObjects) {
+// Event Center
+var eventCenter = require('./lib/eventCenter');
 
-    var regionTypeAdded = [];
-    var historyObject = historyObjects[object];
-
-    // First check, if we have already seen that region/type combination
-    if (!historyCache[historyObject.regionID]) historyCache[historyObject.regionID] = {};
-
-    if (!historyCache[historyObject.regionID][historyObject.typeID]) {
-      historyCache[historyObject.regionID][historyObject.typeID] = {};
-      historyCache[historyObject.regionID][historyObject.typeID].lastSeen = Date.parse(historyObject.generatedAt);
-      historyCache[historyObject.regionID][historyObject.typeID].oldestDate = Date.parse(historyObject.date);
-      historyCache[historyObject.regionID][historyObject.typeID].latestDate = Date.parse(historyObject.date);
-
-      // Add all the datapoints with that region/type
-      for (var freshObject in historyObjects) {
-        var freshHistoryObject = historyObjects[freshObject];
-        if ((freshHistoryObject.regionID == historyObject.regionID) && (freshHistoryObject.typeID == historyObject.typeID)) {
-          filteredHistory.push(freshHistoryObject);
-
-          if (Date.parse(freshHistoryObject.date) < historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].oldestDate) {
-            historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].oldestDate = Date.parse(freshHistoryObject.date);
-          }
-
-          if (Date.parse(freshHistoryObject.date) > historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].latestDate) {
-            historyCache[freshHistoryObject.regionID][freshHistoryObject.typeID].latestDate = Date.parse(freshHistoryObject.date);
-          }
-        }
-      }
-
-      regionTypeAdded.push(historyObject.regionID + '-' + historyObject.typeID);
-
-    }
-    // Check if that combination was not added just before
-
-    if (regionTypeAdded.indexOf(historyObject.regionID + '-' + historyObject.typeID) == -1) {
-      // Bandpass filter history
-
-      var added = false;
-
-      // Pass older data
-      if (Date.parse(historyObject.date) < historyCache[historyObject.regionID][historyObject.typeID].oldestDate) {
-        historyCache[historyObject.regionID][historyObject.typeID].oldestDate = Date.parse(historyObject.date);
-
-        if (!added) {
-          filteredHistory.push(historyObject);
-          added = true;
-        }
-      }
-
-      // Pass newer data
-      if (Date.parse(historyObject.date) > historyCache[historyObject.regionID][historyObject.typeID].latestDate) {
-        historyCache[historyObject.regionID][historyObject.typeID].latestDate = Date.parse(historyObject.date);
-
-        if (!added) {
-          filteredHistory.push(historyObject);
-          added = true;
-        }
-      }
-
-      // Update where generatedAt newer and matches our latest datapoint
-      if (Date.parse(historyObject.date) == historyCache[historyObject.regionID][historyObject.typeID].latestDate) {
-        if (historyCache[historyObject.regionID][historyObject.typeID].lastSeen < Date.parse(historyObject.generatedAt)) {
-          historyCache[historyObject.regionID][historyObject.typeID].lastSeen = Date.parse(historyObject.generatedAt);
-          if (!added) {
-            filteredHistory.push(historyObject);
-            added = true;
-          }
-        }
-      }
-    }
-  }
-
-  historyRowCacheHit += historyObjects.length - filteredHistory.length;
-
-  if ((historyObjects.length - filteredHistory.length) < 0) {
-    console.log('\nSomething went wrong'.red);
-  }
+// EMDR statistics collector
+var emdrStatsCollector = require('./lib/emdrStats');
 
 
-  upsertHistory(filteredHistory);
-}
+//
+// Message Pipeline
+//
 
-// Upsert history
+// Listen for messages and process them asynchronously
+emdr.on('message', function(message) {
 
-function upsertHistory(historyObjects) {
-  // Increase EMDR stats
-  emdrStatsHistoryMessages++;
-  emdrStatsHistoryUpdates = historyObjects.length.length - result.rowCount;
-
-  if (historyObjects.length > 0 && !throttleHistory) {
-    // Collect all the data in the right order
-    var params = [];
-    var values = '';
-
-    for (x = 0; x < historyObjects.length; x++) {
-      var o = historyObjects[x];
-
-      // Add to values string
-      values += '(' + o.regionID + ',' + o.typeID + ',' + o.orders + ',' + o.low + ',' + o.high + ',' + o.average + ',' + o.quantity + ', \'' + o.date + '\'::timestamp AT TIME ZONE \'UTC\'),';
-    }
-
-    values = values.slice(0, -1);
-
-    historyWaiting++;
-
-    pg.connect(config.postgresConnectionString, function(err, pgClient, done){
-      if (err) {
-          console.log('Postgres error:');
-          console.log(err);
-      } else {
-        // Execute query
-        pgClient.query('WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) AS (VALUES ' + values + '), upsert as (UPDATE market_data_orderhistory o SET numorders = new_value.numorders, low = new_value.low, high = new_value.high, mean = new_value.mean, quantity = new_value.quantity FROM new_values new_value WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - \'1 day\'::INTERVAL RETURNING o.*) INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date) SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date FROM new_values WHERE NOT EXISTS (SELECT 1 FROM upsert up WHERE up.mapregion_id = new_values.mapregion_id AND up.invtype_id = new_values.invtype_id AND up.date = new_values.date) AND NOT EXISTS (SELECT 1 FROM market_data_orderhistory WHERE mapregion_id = new_values.mapregion_id AND invtype_id = new_values.invtype_id AND date = new_values.date)', function(err, result) {
-
-          historyWaiting--;
-
-          if (err) {
-            console.log('\nHistory upsert error:');
-            console.log(err);
-            if (config.extensiveLogging) console.log(values);
-          } else {
-            // Increase stat counters
-            historyUpserts += historyObjects.length;
-          }
-
-          done();
-        });
-      }
-    });
-  }
-}
-
-// Upsert orders
-
-function upsertOrders(orders, typeID, regionID) {
-  // Get all the statistical data for the isSuspicios flag:
-  // Check order if "supicious" which is an arbitrary definition.  Any orders that are outside config.stdDevRejectionMultiplier standard deviations
-  // of the mean AND where there are more than 5 orders of like type in the region will be flagged.
-  // Flags: True = Yes (suspicious), False = No (not suspicious)
   //
+<<<<<<< HEAD
   // Execute query asynchnously
 
   stdDevWaiting++;
@@ -865,26 +748,47 @@ if (config.throttlingEnabled) {
             console.log(logMessage.green);
           }
         }
+=======
+  // Messages are processed in this waterfall and are handed down from stage to stage.
+  // For further reference read: http://dev.eve-central.com/unifieduploader/start
+  //
+>>>>>>> nextgen
 
+  async.waterfall([
+    function (callback) {
+      messageParser(message, callback);   // Inflate, sanitize and parse messages
+    },
+    messageFilter,                        // Filter duplicate messages
+    messageSplitter,                      // Splits multi region/type messages into separate resultSets
+    orderFilter,                          // Filter cached order rows
+    orderProcessor,                       // Determine suspicious orders
+    orderStore,                           // Store cleaned order data
+    orderCleanup,                         // Deactivate existing orders which were not present in message
+    orderCalculateRegionStats,            // Calculates order stats of region/type pair
+    orderRegionStats,                     // Store calculated values to itemRegionStat
+    orderRegionStatsHistory               // Store calculated values to itemRegionStatHistory
+  ], function (error, result) {
+    //
+    // Basic error logging
+    //
+
+    eventCenter.emit('messageCheckOut');
+
+    if(error){
+      if (error.severity === 0) {
+        //console.info(String(error.message).cyan);
+      } else if (error.severity === 1) {
+        console.info(String(error.message).yellow);
+      } else if (error.severity === 2) {
+        console.info(String(error.message).red);
       } else {
-        // Throttle history messages
-        throttleHistory = true;
+        console.log('EMDR Message Pipeline Error:'.red);
 
-        logMessage = '\n[' + now.toLocaleTimeString() + '] Throttling history messages.';
-        console.log(logMessage.yellow);
-      }
-
-    } else {
-
-      if (throttleHistory || throttleOrders) {
-        // Un-throttle history and orders
-        throttleHistory = false;
-        throttleOrders = false;
-
-        logMessage = '\n[' + now.toLocaleTimeString() + '] Disabled throttling.';
-        console.log(logMessage.green);
+        // Handle Errors
+        console.error(error);
       }
     }
+<<<<<<< HEAD
   }, 10000);
 }
 
@@ -944,3 +848,7 @@ setTimeout(function() {
     zmqSocket.connect(relay);
   }
 }, 1000 * 60 * 60 * 24 * 365);
+=======
+  });
+});
+>>>>>>> nextgen
