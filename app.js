@@ -40,6 +40,7 @@ var emdrStatsCollector = require('./lib/emdrStats');
 
 // Monitoring
 var axm = require('axm');
+var axmStatCollector = require('./lib/monitoring/axmStatCollector.js');
 
 //
 // Message Pipeline
