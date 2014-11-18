@@ -18,7 +18,8 @@
     "pg": "3.x",
     "underscore": "1.x",
     "zmq": "2.x",
-    "request": "2.x"
+    "request": "2.x",
+    "axm": "0.x"
   },
   "devDependencies": {
     "mocha": "1.19.x",

@@ -38,6 +38,8 @@ var eventCenter = require('./lib/eventCenter');
 // EMDR statistics collector
 var emdrStatsCollector = require('./lib/emdrStats');
 
+// Monitoring
+var axm = require('axm');
 
 //
 // Message Pipeline
@@ -72,6 +74,9 @@ emdr.on('message', function(message) {
     eventCenter.emit('messageCheckOut');
 
     if(error){
+
+      if (error.severity > 0) axm.notify(err);
+
       if (error.severity === 0) {
         //console.info(String(error.message).cyan);
       } else if (error.severity === 1) {
