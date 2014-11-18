@@ -76,7 +76,7 @@ emdr.on('message', function(message) {
 
     if(error){
 
-      if (error.severity > 0) axm.notify(err);
+      if (error.severity !== 0) axm.notify(err);
 
       if (error.severity === 0) {
         //console.info(String(error.message).cyan);
