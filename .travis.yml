@@ -1,11 +1,14 @@
 language: node_js
+sudo: false
 node_js:
   - "0.12"
   - "0.11"
   - "0.10"
-before_install:
- - sudo add-apt-repository ppa:chris-lea/zeromq -y
- - sudo apt-get update
- - sudo apt-get install -y libpgm-dev libzmq3-dev libpq-dev
+addons:
+  apt:
+    packages:
+      - libpgm-dev
+      - libzmq-dev
+      - libpq-dev
 after_script:
- - "istanbul cover ./node_modules/mocha/bin/_mocha --report lcovonly -- -R spec && cat ./coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js && rm -rf ./coverage"
+  - "istanbul cover ./node_modules/mocha/bin/_mocha --report lcovonly -- -R spec && cat ./coverage/lcov.info | ./node_modules/coveralls/bin/coveralls.js && rm -rf ./coverage"
