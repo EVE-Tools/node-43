@@ -1,6 +1,6 @@
 {
   "name": "node-43",
-  "version": "2.1.3",
+  "version": "2.1.4",
   "author": "zweizeichen <info@zweizeichen.org>",
   "description": "a NodeJS based consumer for element43",
   "private": true,
