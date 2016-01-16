@@ -6,31 +6,34 @@
 
 -- Order Upsert
 
-WITH new_values (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active)
-AS (VALUES ' + values + '),
-upsert as
-(
-  UPDATE orders o
-    SET price = new_value.price,
-        volume_remaining = new_value.volume_remaining,
-	      generated_at = new_value.generated_at,
-        issue_date = new_value.issue_date,
-        is_suspicious = new_value.is_suspicious,
-        uploader_ip_hash = new_value.uploader_ip_hash,
-        is_active = 't'
-  FROM new_values new_value
-  WHERE o.id = new_value.id AND o.generated_at < new_value.generated_at
-  RETURNING o.*
-)
-INSERT INTO market_data_orders (generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active)
-SELECT generated_at, price, volume_remaining, volume_entered, minimum_volume, order_range, id, is_bid, issue_date, duration, is_suspicious, uploader_ip_hash, mapregion_id, invtype_id, stastation_id, mapsolarsystem_id, is_active
-FROM new_values
-WHERE NOT EXISTS (SELECT 1
-                  FROM upsert up
-                  WHERE up.id = new_values.id)
-  AND NOT EXISTS (SELECT 1
-                  FROM market_data_orders
-                  WHERE id = new_values.id)
+INSERT INTO market_data_orders AS orders (generated_at,
+  price,
+  volume_remaining,
+  volume_entered,
+  minimum_volume,
+  order_range,
+  id,
+  is_bid,
+  issue_date,
+  duration,
+  is_suspicious,
+  message_key,
+  uploader_ip_hash,
+  mapregion_id,
+  invtype_id,
+  stastation_id,
+  mapsolarsystem_id,
+  is_active)
+VALUES *values*
+ON CONFLICT (id) DO UPDATE SET
+  price = excluded.price,
+  volume_remaining = excluded.volume_remaining,
+  generated_at = excluded.generated_at,
+  issue_date = excluded.issue_date,
+  is_suspicious = excluded.is_suspicious,
+  uploader_ip_hash = excluded.uploader_ip_hash,
+  is_active = 't'
+WHERE orders.id = excluded.id AND orders.generated_at < excluded.generated_at
 
 -- History Upserts
 
