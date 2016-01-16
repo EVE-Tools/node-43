@@ -37,30 +37,6 @@ WHERE orders.id = excluded.id AND orders.generated_at < excluded.generated_at
 
 -- History Upserts
 
-WITH new_values (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date)
-AS (VALUES ' + values + '),
-upsert as
-(
-  UPDATE market_data_orderhistory o
-    SET numorders = new_value.numorders,
-        low = new_value.low,
-        high = new_value.high,
-        mean = new_value.mean,
-        quantity = new_value.quantity
-  FROM new_values new_value
-  WHERE o.mapregion_id = new_value.mapregion_id AND o.invtype_id = new_value.invtype_id AND o.date = new_value.date AND o.date >= NOW() - '1 day'::INTERVAL
-  RETURNING o.*
-)
 INSERT INTO market_data_orderhistory (mapregion_id, invtype_id, numorders, low, high, mean, quantity, date)
-SELECT mapregion_id, invtype_id, numorders, low, high, mean, quantity, date
-FROM new_values
-WHERE NOT EXISTS (SELECT 1
-                  FROM upsert up
-                  WHERE up.mapregion_id = new_values.mapregion_id
-                    AND up.invtype_id = new_values.invtype_id
-                    AND up.date = new_values.date)
-  AND NOT EXISTS (SELECT 1
-                  FROM market_data_orderhistory
-                  WHERE mapregion_id = new_values.mapregion_id
-                    AND invtype_id = new_values.invtype_id
-                    AND date = new_values.date)
+VALUES *values*
+ON CONFLICT (mapregion_id, invtype_id, date) DO NOTHING
