@@ -1,3 +1,17 @@
+---
+
+<p align="center">⚠️⚠️⚠️⚠️⚠️</p>
+
+---
+
+**This project is not maintained anymore! Please check [here](https://github.com/EVE-Tools/element43) for alternatives. This repository is kept online for reference purposes only and can be taken offline/deleted any time.**
+
+---
+
+<p align="center">⚠️⚠️⚠️⚠️⚠️</p>
+
+---
+
 # node-43
 [![Build Status](https://img.shields.io/travis/EVE-Tools/node-43.svg?style=flat)](https://travis-ci.org/EVE-Tools/node-43) [![Coveralls](https://img.shields.io/coveralls/EVE-Tools/node-43.svg?style=flat)](https://coveralls.io/r/EVE-Tools/node-43) [![Dependencies Status](https://img.shields.io/gemnasium/EVE-Tools/node-43.svg?style=flat)](https://gemnasium.com/EVE-Tools/node-43) [![Code Climate](https://img.shields.io/codeclimate/github/EVE-Tools/node-43.svg?style=flat)](https://codeclimate.com/github/EVE-Tools/node-43/) [![gittip](https://img.shields.io/gittip/zweizeichen.svg?style=flat)](https://www.gittip.com/zweizeichen/)
 
